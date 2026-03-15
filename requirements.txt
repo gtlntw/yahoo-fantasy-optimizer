@@ -1,0 +1,5 @@
+yahoo_fantasy_api>=2.12.0
+yahoo-fantasy-api>=1.6.2
+google-genai>=0.2.0
+python-dotenv>=1.0.0
+pybaseball>=2.2.0
