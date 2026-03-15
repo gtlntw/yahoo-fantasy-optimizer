@@ -246,6 +246,10 @@ def _determine_priority(
         return CategoryPriority.LOW  # Punt category
     
     # Check if we're close to gaining a point
+    # Case: Everyone is at 0.0 (pre-season or missing stats), don't mark as HIGH priority
+    if my_value == 0 and gap_to_gain == 0 and (gap_to_lose == 0 or gap_to_lose == float("inf")):
+        return CategoryPriority.MEDIUM
+        
     if gap_to_gain <= _small_gap_threshold(category, my_value):
         return CategoryPriority.HIGH
     
@@ -296,6 +300,10 @@ def _extract_stat(team_data: dict, category: str) -> float:
     # The Yahoo API standings format varies; handle common structures
     stats = team_data.get("stats", {})
     
+    # Detect missing stats entirely (pre-season)
+    if not stats:
+        return 0.0
+        
     # Try direct key lookup
     if category in stats:
         return float(stats[category])

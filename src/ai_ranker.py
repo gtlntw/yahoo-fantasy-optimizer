@@ -133,6 +133,7 @@ Rank ALL players, from 1 (best/start) to {len(players)} (worst/bench).
         response = _client.models.generate_content(
             model=model_name,
             contents=prompt,
+            config={"temperature": 0.0},
         )
         
         # Parse the JSON response
