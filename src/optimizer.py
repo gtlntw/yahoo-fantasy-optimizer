@@ -107,7 +107,7 @@ def optimize_lineup(
         player = _find_player(roster, player_id)
         if player:
             old_pos = player.get("selected_position", "BN")
-            if old_pos != new_pos:
+            if old_pos != new_pos and _is_meaningful_change(old_pos, new_pos):
                 changes.append({
                     "player_id": player_id,
                     "player_name": player["name"],
@@ -214,6 +214,44 @@ def _assign_players_to_slots(
                 break
     
     return assignments
+
+
+
+# Pitcher slots that are all "generic active pitcher" — any SP/RP can fill them.
+# Moving between these slots has zero real-world impact on scoring.
+_PITCHER_FLEX_SLOTS = {"SP", "RP", "P"}
+# Batter flex slots (Util can hold any position)
+_BATTER_FLEX_SLOTS = {"Util"}
+
+
+def _is_meaningful_change(old_pos: str, new_pos: str) -> bool:
+    """
+    Return True only if moving from old_pos to new_pos actually matters.
+
+    Suppresses no-op swaps like:
+    - SP ↔ P  (both are active pitcher slots; Yahoo scoring is identical)
+    - RP ↔ P
+    - SP ↔ RP (these matter for slot eligibility but not for scoring output)
+
+    A change is meaningful when:
+    - It involves the bench (BN) or IL — going active ↔ bench always matters.
+    - It moves a pitcher OUT of the pitcher-flex group entirely.
+    - It moves a batter into/out of a dedicated positional slot (C, 1B, SS, …).
+    """
+    # BN / IL transitions always matter
+    special = {"BN", "IL", "IL10", "IL15", "IL60", "DL", "IL-LT", "NA"}
+    if old_pos in special or new_pos in special:
+        return True
+
+    # Swapping within the same pitcher flex group is a no-op
+    if old_pos in _PITCHER_FLEX_SLOTS and new_pos in _PITCHER_FLEX_SLOTS:
+        return False
+
+    # Swapping within batter Util slots is also a no-op
+    if old_pos in _BATTER_FLEX_SLOTS and new_pos in _BATTER_FLEX_SLOTS:
+        return False
+
+    return True
 
 
 def _find_player(roster: list[dict], player_id: int) -> dict:

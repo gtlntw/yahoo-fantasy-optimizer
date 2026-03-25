@@ -107,22 +107,28 @@ SCORING CATEGORIES ({player_type}s): {categories}
 PLAYERS TO RANK:
 {json.dumps(player_info, indent=2)}
 
-TASK: Rank these {player_type}s from best to worst for today's lineup based on:
-1. Whether the player likely has a game today
-2. Player quality and expected production
+TASK: Rank these {player_type}s from BEST to WORST for today's lineup.
+Your ranking determines who STARTS (plays today) vs who sits on the BENCH.
+The slot assignment (SP/RP/P or Util) is handled automatically — focus ONLY on which players produce the most value today.
+
+Rank based on:
+1. Whether the player likely has a game today (no game = bench)
+2. Player quality and expected production for today's game
 3. Category priority weights (prioritize HIGH categories)
-4. Injury status (injured players ranked last)
-5. For pitchers: whether they are likely starting today (SP) or in a high-leverage role (RP/closer)
+4. Injury status (injured/IL players ranked last)
+5. For pitchers: whether they are STARTING today (SPs pitching today rank far ahead of SPs who are not starting)
+6. For relievers: whether they are in a high-leverage/save opportunity role
 
 IMPORTANT RULES:
 - Players with status "IL", "IL10", "IL15", "IL60", "DL" should be ranked LAST (they cannot play)
 - Players with status "DTD" should be ranked lower but not excluded
 - Prioritize players who contribute to 🔴 HIGH priority categories
-- For ⚠️ PROTECT categories (rate stats), be cautious about starting players who might hurt the stat
+- For ⚠️ PROTECT categories (rate stats like ERA/WHIP/AVG), be cautious about starting players who might hurt the stat
+- Do NOT suggest slot changes (SP→P etc.) — just rank who should play
 
 Return ONLY a JSON array with this format, no other text:
 [
-  {{"player_id": <id>, "rank": 1, "reasoning": "<brief reason>"}},
+  {{"player_id": <id>, "rank": 1, "reasoning": "<brief reason focused on TODAY'S game value>"}},
   ...
 ]
 
