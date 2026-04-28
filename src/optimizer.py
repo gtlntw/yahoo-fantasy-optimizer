@@ -73,18 +73,57 @@ def optimize_lineup(
         p for p in batters
         if p.get("status", "") not in ("IL", "IL10", "IL15", "IL60", "DL", "IL-LT")
         and p.get("selected_position") != "NA"
+        and p.get("has_game", True)  # bench batters with no game today
     ]
-    active_pitchers = [
+    # Batters whose team has no game today — force to bench
+    no_game_batters = [
+        p for p in batters
+        if p.get("status", "") not in ("IL", "IL10", "IL15", "IL60", "DL", "IL-LT")
+        and p.get("selected_position") != "NA"
+        and not p.get("has_game", True)
+    ]
+    # Healthy pitchers are split into three tiers:
+    #  1. SPs who are starting today + all RPs (fill active slots first)
+    #  2. SPs NOT in the starting rotation today (fill P flex only / bench)
+    # All injured pitchers go to inactive_players as before.
+    healthy_pitchers = [
         p for p in pitchers
         if p.get("status", "") not in ("IL", "IL10", "IL15", "IL60", "DL", "IL-LT")
         and p.get("selected_position") != "NA"
+        and p.get("has_game", True)  # pitchers with no game go to bench
     ]
+    no_game_pitchers = [
+        p for p in pitchers
+        if p.get("status", "") not in ("IL", "IL10", "IL15", "IL60", "DL", "IL-LT")
+        and p.get("selected_position") != "NA"
+        and not p.get("has_game", True)
+    ]
+
+    # Build priority-ordered pitcher list:
+    # Starting SPs and all RPs first, non-starting SPs last
+    def _is_sp(p):
+        positions = set(p.get("eligible_positions", []))
+        return bool(positions & {"SP"})
+
+    active_pitchers_primary = [
+        p for p in healthy_pitchers
+        if not _is_sp(p) or p.get("is_starting_pitcher", True)
+    ]
+    active_pitchers_secondary = [
+        p for p in healthy_pitchers
+        if _is_sp(p) and not p.get("is_starting_pitcher", True)
+    ]
+    # Combine: primary gets slot preference, secondary fills leftovers
+    active_pitchers = active_pitchers_primary + active_pitchers_secondary
     
     inactive_players = [
         p for p in roster
         if p.get("status", "") in ("IL", "IL10", "IL15", "IL60", "DL", "IL-LT")
         or p.get("selected_position") == "NA"
     ]
+
+    # Players with no game are handled separately (force-bench below)
+    no_game_players = no_game_batters + no_game_pitchers
     
     # Assign batters to batter slots
     batter_assignments = _assign_players_to_slots(active_batters, BATTER_SLOTS)
@@ -99,7 +138,7 @@ def optimize_lineup(
     assigned_ids = set(all_assignments.keys())
     benched_batters = [p for p in active_batters if p["player_id"] not in assigned_ids]
     benched_pitchers = [p for p in active_pitchers if p["player_id"] not in assigned_ids]
-    
+
     # Build the change list
     changes = []
     
@@ -116,18 +155,36 @@ def optimize_lineup(
                     "reason": player.get("ai_reasoning", ""),
                 })
     
-    # Bench players that should be benched
-    for player in benched_batters + benched_pitchers:
+    # Force-bench players with no game today
+    for player in no_game_players:
         old_pos = player.get("selected_position", "BN")
         if old_pos != "BN" and old_pos not in ("IL", "IL+", "DL", "NA"):
+            reason = "No game today"
             changes.append({
                 "player_id": player["player_id"],
                 "player_name": player["name"],
                 "from": old_pos,
                 "to": "BN",
-                "reason": player.get("ai_reasoning", "Lower ranked / no game"),
+                "reason": reason,
             })
-    
+
+    # Bench players that should be benched based on rankings
+    for player in benched_batters + benched_pitchers:
+        old_pos = player.get("selected_position", "BN")
+        if old_pos != "BN" and old_pos not in ("IL", "IL+", "DL", "NA"):
+            # Provide informative reason for non-starting SPs
+            if _is_sp(player) and not player.get("is_starting_pitcher", True) and player.get("has_game", True):
+                reason = player.get("ai_reasoning", "Not in starting rotation today")
+            else:
+                reason = player.get("ai_reasoning", "Lower ranked / no game")
+            changes.append({
+                "player_id": player["player_id"],
+                "player_name": player["name"],
+                "from": old_pos,
+                "to": "BN",
+                "reason": reason,
+            })
+
     logger.info(f"Optimizer produced {len(changes)} lineup changes")
     return changes
 

@@ -88,6 +88,9 @@ def _rank_group(
             "eligible_positions": p.get("eligible_positions", []),
             "selected_position": p.get("selected_position"),
             "status": p.get("status", "healthy"),
+            "has_game": p.get("has_game", True),
+            "is_starting_pitcher": p.get("is_starting_pitcher", False),
+            "opponent": p.get("opponent", ""),
         }
         player_info.append(info)
     
@@ -112,14 +115,16 @@ Your ranking determines who STARTS (plays today) vs who sits on the BENCH.
 The slot assignment (SP/RP/P or Util) is handled automatically — focus ONLY on which players produce the most value today.
 
 Rank based on:
-1. Whether the player likely has a game today (no game = bench)
-2. Player quality and expected production for today's game
-3. Category priority weights (prioritize HIGH categories)
-4. Injury status (injured/IL players ranked last)
-5. For pitchers: whether they are STARTING today (SPs pitching today rank far ahead of SPs who are not starting)
+1. `has_game` field: if False, rank LAST — player's team has NO GAME TODAY (reason: "No game today")
+2. For pitchers: `is_starting_pitcher` field: if True, player IS the probable SP today and ranks far higher than SPs not starting. If False and the player is an SP, rank them BELOW all RPs who have games (reason: "Not in starting rotation today")
+3. Player quality and expected production for today's game vs the named `opponent`
+4. Category priority weights (prioritize HIGH categories)
+5. Injury status (injured/IL players ranked last)
 6. For relievers: whether they are in a high-leverage/save opportunity role
 
 IMPORTANT RULES:
+- `has_game == false` → rank LAST, reasoning must say "No game today"
+- `is_starting_pitcher == false` AND player is SP-eligible → rank below ALL RPs with games; reasoning should say "Not in starting rotation today"
 - Players with status "IL", "IL10", "IL15", "IL60", "DL" should be ranked LAST (they cannot play)
 - Players with status "DTD" should be ranked lower but not excluded
 - Prioritize players who contribute to 🔴 HIGH priority categories

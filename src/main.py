@@ -16,7 +16,7 @@ import os
 import sys
 
 from dotenv import load_dotenv
-from . import auth, data, ai_ranker, standings, il_manager, optimizer, roster, notifier
+from . import auth, data, ai_ranker, standings, il_manager, optimizer, roster, notifier, schedule as sched
 
 # Load environment variables from .env file (if it exists)
 load_dotenv()
@@ -138,6 +138,22 @@ def main():
         print("📋 Fetching roster...")
         current_roster = data.get_roster(team, target_date)
         print(f"   Found {len(current_roster)} players")
+        print()
+
+        # ── Step 2b: Fetch schedule & enrich roster ───────────────
+        print("📅 Fetching MLB schedule...")
+        schedule_info = sched.get_schedule(str(target_date))
+        current_roster = sched.enrich_roster_with_schedule(current_roster, schedule_info)
+        starting_sps = sum(
+            1 for p in current_roster
+            if p.get("is_starting_pitcher") and p.get("position_type") == "P"
+        )
+        no_game_count = sum(1 for p in current_roster if not p.get("has_game", True))
+        print(
+            f"   {len(schedule_info.teams_playing)} MLB teams playing today · "
+            f"{starting_sps} roster SP(s) confirmed starting · "
+            f"{no_game_count} player(s) with no game (will bench)"
+        )
         print()
         
         # ── Step 3: Analyze standings ─────────────────────────────
