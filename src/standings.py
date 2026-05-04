@@ -299,25 +299,28 @@ def _extract_stat(team_data: dict, category: str) -> float:
     """Extract a stat value from team standings data."""
     # The Yahoo API standings format varies; handle common structures
     stats = team_data.get("stats", {})
-    
+
     # Detect missing stats entirely (pre-season)
     if not stats:
         return 0.0
-        
-    # Try direct key lookup
-    if category in stats:
-        return float(stats[category])
-    
-    # Try lowercase
-    if category.lower() in stats:
-        return float(stats[category.lower()])
-    
-    # Try in a nested stats list
+
+    # Handle list format (e.g. [{"name": "HR", "value": 42}, ...])
+    # Must come BEFORE dict access to avoid TypeError on list input.
     if isinstance(stats, list):
         for stat in stats:
             if stat.get("name") == category or stat.get("abbr") == category:
                 return float(stat.get("value", 0))
-    
+        logger.warning(f"Could not find stat '{category}' in standings data")
+        return 0.0
+
+    # Dict format — try direct key lookup
+    if category in stats:
+        return float(stats[category])
+
+    # Try lowercase key
+    if category.lower() in stats:
+        return float(stats[category.lower()])
+
     logger.warning(f"Could not find stat '{category}' in standings data")
     return 0.0
 

@@ -136,7 +136,7 @@ def main():
         
         # ── Step 2: Fetch roster ──────────────────────────────────
         print("📋 Fetching roster...")
-        current_roster = data.get_roster(team, target_date)
+        current_roster = data.get_roster(team, target_date, league)
         print(f"   Found {len(current_roster)} players")
         print()
 
@@ -166,13 +166,14 @@ def main():
         
         # If we can't get teamkey from details, try to find it
         if not my_team_key:
-            for t in league_standings:
-                # First team as fallback
-                my_team_key = t.get("team_key", "")
-                break
-        
-        category_gaps = standings.analyze_standings(league_standings, my_team_key)
-        
+            logger.warning(
+                "Could not determine your team key from team.details(). "
+                "Standings analysis will be skipped."
+            )
+            category_gaps = []
+        else:
+            category_gaps = standings.analyze_standings(league_standings, my_team_key)
+
         # Display category analysis
         print()
         print(standings.build_priority_context(category_gaps))
@@ -184,10 +185,11 @@ def main():
         print(il_manager.format_il_moves(il_moves))
         print()
         
-        # If IL moves were applied, refetch the roster
+        # If IL moves were applied, refetch the roster and re-enrich with schedule
         if il_moves and not dry_run:
             print("   Refetching roster after IL moves...")
-            current_roster = data.get_roster(team, target_date)
+            current_roster = data.get_roster(team, target_date, league)
+            current_roster = sched.enrich_roster_with_schedule(current_roster, schedule_info)
         
         # ── Step 5: Rank players ──────────────────────────────────
         if args.no_ai or not args.gemini_key:
@@ -259,7 +261,7 @@ def main():
             # ── Email Notification ────────────────────────────────────
             if args.email_to:
                 print(f"📧 Formatting email notification for {args.email_to}...")
-                subject = f"⚾ Yahoo Fantasy Basebal Optimizer: {len(changes)} Moves Needed for {target_date}"
+                subject = f"⚾ Yahoo Fantasy Baseball Optimizer: {len(changes)} Moves Needed for {target_date}"
                 
                 body = (
                     f"Date: {target_date}\n"

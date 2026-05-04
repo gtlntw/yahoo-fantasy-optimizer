@@ -20,24 +20,47 @@ PITCHER_POSITIONS = {"SP", "RP", "P"}
 INACTIVE_POSITIONS = {"BN", "IL", "IL+", "NA", "DL"}
 
 
-def get_roster(team: yfa.Team, date: Optional[datetime.date] = None) -> list[dict]:
+def get_roster(team: yfa.Team, date: Optional[datetime.date] = None, league: Optional[yfa.League] = None) -> list[dict]:
     """
     Fetch the team roster for a given date.
     
     Args:
         team: Yahoo Fantasy Team object
         date: Date to get roster for. Defaults to today.
+        league: Optional Yahoo Fantasy League object. If provided, used to fetch
+                MLB team names (editorial_team_full_name) which are missing from the raw roster.
     
     Returns:
         List of player dicts with keys:
             player_id, name, position_type, eligible_positions,
-            selected_position, status
+            selected_position, status, editorial_team_full_name (if league provided)
     """
     if date is None:
         date = datetime.date.today()
     
     logger.info(f"Fetching roster for {date}...")
     roster = team.roster(day=date)
+    
+    # If league is provided, fetch detailed player info to get their real-life MLB team
+    if league and roster:
+        try:
+            logger.info("  Enriching roster with MLB team names from player details...")
+            pids = [p["player_id"] for p in roster]
+            details = league.player_details(pids)
+            
+            # Create a lookup dict for fast merging
+            team_lookup = {}
+            for d in details:
+                if "player_id" in d and "editorial_team_full_name" in d:
+                    team_lookup[str(d["player_id"])] = d["editorial_team_full_name"]
+            
+            # Attach to roster
+            for player in roster:
+                pid = str(player.get("player_id", ""))
+                if pid in team_lookup:
+                    player["editorial_team_full_name"] = team_lookup[pid]
+        except Exception as e:
+            logger.warning(f"  Failed to fetch player details for team names: {e}")
     
     logger.info(f"  Found {len(roster)} players on roster")
     for player in roster:

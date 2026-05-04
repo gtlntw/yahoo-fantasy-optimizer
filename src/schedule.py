@@ -170,7 +170,9 @@ _YAHOO_TO_MLB: dict[str, str] = {
     # AL West
     "houston astros": "houston astros",
     "los angeles angels": "los angeles angels",
-    "oakland athletics": "oakland athletics",
+    "oakland athletics": "athletics",
+    "sacramento athletics": "athletics",
+    "athletics": "athletics",
     "seattle mariners": "seattle mariners",
     "texas rangers": "texas rangers",
     # NL East

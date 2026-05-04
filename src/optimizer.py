@@ -107,14 +107,18 @@ def optimize_lineup(
 
     active_pitchers_primary = [
         p for p in healthy_pitchers
-        if not _is_sp(p) or p.get("is_starting_pitcher", True)
+        if not _is_sp(p) or p.get("is_starting_pitcher", False)
     ]
+    for p in active_pitchers_primary: p["_sort_priority"] = 0
+    
     active_pitchers_secondary = [
         p for p in healthy_pitchers
-        if _is_sp(p) and not p.get("is_starting_pitcher", True)
+        if _is_sp(p) and not p.get("is_starting_pitcher", False)
     ]
-    # Combine: primary gets slot preference, secondary fills leftovers
-    active_pitchers = active_pitchers_primary + active_pitchers_secondary
+    for p in active_pitchers_secondary: p["_sort_priority"] = 1
+    
+    # We only assign primary pitchers (starters & relievers) to active slots.
+    # Secondary pitchers (non-starting SPs) provide 0 stats and shouldn't fill slots.
     
     inactive_players = [
         p for p in roster
@@ -128,8 +132,8 @@ def optimize_lineup(
     # Assign batters to batter slots
     batter_assignments = _assign_players_to_slots(active_batters, BATTER_SLOTS)
     
-    # Assign pitchers to pitcher slots
-    pitcher_assignments = _assign_players_to_slots(active_pitchers, PITCHER_SLOTS)
+    # Assign pitchers to pitcher slots (only primary pitchers get active slots)
+    pitcher_assignments = _assign_players_to_slots(active_pitchers_primary, PITCHER_SLOTS)
     
     # Combine assignments
     all_assignments = {**batter_assignments, **pitcher_assignments}
@@ -137,7 +141,10 @@ def optimize_lineup(
     # Determine which players are benched
     assigned_ids = set(all_assignments.keys())
     benched_batters = [p for p in active_batters if p["player_id"] not in assigned_ids]
-    benched_pitchers = [p for p in active_pitchers if p["player_id"] not in assigned_ids]
+    
+    # All secondary pitchers are automatically benched, plus any primary ones that didn't fit
+    all_active_pitchers = active_pitchers_primary + active_pitchers_secondary
+    benched_pitchers = [p for p in all_active_pitchers if p["player_id"] not in assigned_ids]
 
     # Build the change list
     changes = []
@@ -173,7 +180,7 @@ def optimize_lineup(
         old_pos = player.get("selected_position", "BN")
         if old_pos != "BN" and old_pos not in ("IL", "IL+", "DL", "NA"):
             # Provide informative reason for non-starting SPs
-            if _is_sp(player) and not player.get("is_starting_pitcher", True) and player.get("has_game", True):
+            if _is_sp(player) and not player.get("is_starting_pitcher", False) and player.get("has_game", True):
                 reason = player.get("ai_reasoning", "Not in starting rotation today")
             else:
                 reason = player.get("ai_reasoning", "Lower ranked / no game")
@@ -185,8 +192,25 @@ def optimize_lineup(
                 "reason": reason,
             })
 
-    logger.info(f"Optimizer produced {len(changes)} lineup changes")
-    return changes
+    # Filter out cosmetic benching:
+    # If a player is being benched, but their old active slot is still empty in the new lineup,
+    # let them stay in their old slot to avoid unnecessary noise.
+    from collections import Counter
+    slot_capacity = Counter(s["slot"] for s in BATTER_SLOTS + PITCHER_SLOTS)
+    slots_used = Counter(pos for pos in all_assignments.values())
+    
+    final_changes = []
+    for change in changes:
+        if change["to"] == "BN" and change["from"] not in ("IL", "IL+", "DL", "NA", "BN"):
+            old_pos = change["from"]
+            if slots_used[old_pos] < slot_capacity[old_pos]:
+                # There's an empty slot here anyway, just leave them in it
+                slots_used[old_pos] += 1
+                continue
+        final_changes.append(change)
+
+    logger.info(f"Optimizer produced {len(final_changes)} lineup changes")
+    return final_changes
 
 
 def _assign_players_to_slots(
@@ -217,8 +241,9 @@ def _assign_players_to_slots(
     players_by_specificity = sorted(
         players,
         key=lambda p: (
+            p.get("_sort_priority", 0),            # Primary pitchers (0) before secondary (1)
             len(p.get("eligible_positions", [])),  # Less positions = more specific
-            p.get("ai_rank", 999),  # Then by AI rank
+            p.get("ai_rank", 999),                 # Then by AI rank
         )
     )
     
@@ -255,7 +280,7 @@ def _assign_players_to_slots(
     
     # Phase 2: Fill remaining slots with best available (by AI rank)
     remaining_players = [p for p in players if p["player_id"] not in assigned_players]
-    remaining_players.sort(key=lambda p: p.get("ai_rank", 999))
+    remaining_players.sort(key=lambda p: (p.get("_sort_priority", 0), p.get("ai_rank", 999)))
     
     for player in remaining_players:
         eligible = set(p for p in player.get("eligible_positions", []))
