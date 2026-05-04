@@ -11,10 +11,17 @@ import os
 from typing import Optional
 
 from google import genai
+from google.genai import types
+from pydantic import BaseModel
 
 from .standings import CategoryGap, CategoryPriority, build_priority_context
 
 logger = logging.getLogger(__name__)
+
+class PlayerRanking(BaseModel):
+    player_id: int
+    rank: int
+    reasoning: str
 
 # Module-level client, initialized by configure_gemini()
 _client: genai.Client = None
@@ -37,6 +44,7 @@ def rank_players(
     category_gaps: list[CategoryGap],
     date_str: str,
     model_name: str = "gemini-3.1-pro-preview",
+    recent_stats: dict = None,
 ) -> list[dict]:
     """
     Use Gemini to rank players by expected daily fantasy value.
@@ -51,6 +59,9 @@ def rank_players(
         List of player dicts sorted by AI ranking, with added 'ai_rank'
         and 'ai_reasoning' fields
     """
+    if recent_stats is None:
+        recent_stats = {}
+        
     # Separate batters and pitchers
     batters = [p for p in roster if p.get("position_type") == "B"]
     pitchers = [p for p in roster if p.get("position_type") == "P"]
@@ -58,11 +69,11 @@ def rank_players(
     ranked = []
     
     if batters:
-        ranked_batters = _rank_group(batters, category_gaps, date_str, "batter", model_name)
+        ranked_batters = _rank_group(batters, category_gaps, date_str, "batter", model_name, recent_stats)
         ranked.extend(ranked_batters)
     
     if pitchers:
-        ranked_pitchers = _rank_group(pitchers, category_gaps, date_str, "pitcher", model_name)
+        ranked_pitchers = _rank_group(pitchers, category_gaps, date_str, "pitcher", model_name, recent_stats)
         ranked.extend(ranked_pitchers)
     
     return ranked
@@ -74,6 +85,7 @@ def _rank_group(
     date_str: str,
     player_type: str,
     model_name: str,
+    recent_stats: dict,
 ) -> list[dict]:
     """Rank a group of players (batters or pitchers) using Gemini."""
     
@@ -91,6 +103,7 @@ def _rank_group(
             "has_game": p.get("has_game", True),
             "is_starting_pitcher": p.get("is_starting_pitcher", False),
             "opponent": p.get("opponent", ""),
+            "recent_stats": recent_stats.get(p.get("player_id"), {}),
         }
         player_info.append(info)
     
@@ -119,8 +132,9 @@ Rank based on:
 2. For pitchers: `is_starting_pitcher` field: if True, player IS the probable SP today and ranks far higher than SPs not starting. If False and the player is an SP, rank them BELOW all RPs who have games (reason: "Not in starting rotation today")
 3. Player quality and expected production for today's game vs the named `opponent`
 4. Category priority weights (prioritize HIGH categories)
-5. Injury status (injured/IL players ranked last)
-6. For relievers: whether they are in a high-leverage/save opportunity role
+5. Recent performance trends based on the `recent_stats` field (which contains `lastweek` and `lastmonth` stats). Favor players on hot streaks and penalize those in deep slumps.
+6. Injury status (injured/IL players ranked last)
+7. For relievers: whether they are in a high-leverage/save opportunity role
 
 IMPORTANT RULES:
 - `has_game == false` → rank LAST, reasoning must say "No game today"
@@ -131,12 +145,6 @@ IMPORTANT RULES:
 - For ⚠️ PROTECT categories (rate stats like ERA/WHIP/AVG), be cautious about starting players who might hurt the stat
 - Do NOT suggest slot changes (SP→P etc.) — just rank who should play
 
-Return ONLY a JSON array with this format, no other text:
-[
-  {{"player_id": <id>, "rank": 1, "reasoning": "<brief reason focused on TODAY'S game value>"}},
-  ...
-]
-
 Rank ALL players, from 1 (best/start) to {len(players)} (worst/bench).
 """
     
@@ -144,16 +152,15 @@ Rank ALL players, from 1 (best/start) to {len(players)} (worst/bench).
         response = _client.models.generate_content(
             model=model_name,
             contents=prompt,
-            config={"temperature": 0.0},
+            config=types.GenerateContentConfig(
+                temperature=0.0,
+                response_mime_type="application/json",
+                response_schema=list[PlayerRanking],
+            ),
         )
         
         # Parse the JSON response
         response_text = response.text.strip()
-        # Remove markdown code fences if present
-        if response_text.startswith("```"):
-            lines = response_text.split("\n")
-            response_text = "\n".join(lines[1:-1])
-        
         rankings = json.loads(response_text)
         
         # Merge rankings back into player dicts

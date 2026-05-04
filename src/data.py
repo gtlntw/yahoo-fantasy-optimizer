@@ -91,9 +91,66 @@ def get_standings(league: yfa.League) -> list[dict]:
     Returns:
         List of team standings with stats per category
     """
-    standings = league.standings()
-    logger.info(f"Fetched standings for {len(standings)} teams")
-    return standings
+    # The default league.standings() strips out stats, so we fetch raw:
+    try:
+        raw = league.yhandler.get(f"league/{league.league_id}/standings")
+        teams_dict = raw["fantasy_content"]["league"][1]["standings"][0]["teams"]
+        
+        # Ensure stats_id_map is loaded
+        if not hasattr(league, 'stats_id_map') or not league.stats_id_map:
+            league._cache_stats_id_map(league.settings()['game_code'])
+            
+        stats_map = league.stats_id_map
+        
+        standings = []
+        for key, team_wrapper in teams_dict.items():
+            if key == "count":
+                continue
+                
+            team_data = team_wrapper["team"]
+            team_info = {}
+            
+            # Extract basic info
+            if isinstance(team_data[0], list):
+                for item in team_data[0]:
+                    if isinstance(item, dict):
+                        for k, v in item.items():
+                            team_info[k] = v
+            
+            # Extract standings and stats
+            extracted_stats = {}
+            for item in team_data:
+                if isinstance(item, dict):
+                    if "team_standings" in item:
+                        team_info["rank"] = item["team_standings"].get("rank")
+                    elif "team_stats" in item:
+                        raw_stats = item["team_stats"].get("stats", [])
+                        for s in raw_stats:
+                            stat_obj = s.get("stat", {})
+                            stat_id = stat_obj.get("stat_id")
+                            val = stat_obj.get("value")
+                            
+                            # Map stat_id to category name using league map
+                            try:
+                                stat_id_int = int(stat_id)
+                                if stat_id_int in stats_map:
+                                    cat_name = stats_map[stat_id_int]
+                                    extracted_stats[cat_name] = val
+                            except (ValueError, TypeError):
+                                pass
+            
+            # Put stats directly in the team_info dict for _extract_stat to find
+            team_info["stats"] = extracted_stats
+            standings.append(team_info)
+            
+        logger.info(f"Fetched standings for {len(standings)} teams")
+        return standings
+        
+    except Exception as e:
+        logger.warning(f"Failed to fetch raw standings: {e}. Falling back to default.")
+        standings = league.standings()
+        logger.info(f"Fetched standings for {len(standings)} teams")
+        return standings
 
 
 def get_free_agents(league: yfa.League, position: str = "B") -> list[dict]:
@@ -227,3 +284,56 @@ def get_player_stats(league: yfa.League, player_ids: list[int]) -> dict:
         logger.warning(f"Could not fetch player stats: {e}")
     
     return stats
+
+
+def get_recent_stats(league: yfa.League, roster: list[dict]) -> dict:
+    """
+    Fetch recent stats for players to determine their recent form.
+    Batters: lastweek, lastmonth
+    Pitchers: lastmonth
+    
+    Note: yahoo_fantasy_api only supports 'lastweek' (7 days) and 'lastmonth' (30 days).
+    """
+    # Separate player IDs by type
+    batter_ids = []
+    pitcher_ids = []
+    
+    for p in roster:
+        pid = p.get("player_id")
+        if not pid:
+            continue
+        # In yfa, 'B' means batter, 'P' means pitcher
+        if p.get("position_type") == "B":
+            batter_ids.append(pid)
+        elif p.get("position_type") == "P":
+            pitcher_ids.append(pid)
+            
+    stats_dict = {p.get("player_id"): {} for p in roster if p.get("player_id")}
+    
+    # Helper to merge stats into the main dict
+    def merge_stats(player_ids, req_type):
+        if not player_ids:
+            return
+        logger.info(f"  Fetching {req_type} stats for {len(player_ids)} players...")
+        try:
+            # player_stats handles chunking automatically under the hood
+            res = league.player_stats(player_ids, req_type)
+            for row in res:
+                pid = row.get("player_id")
+                if pid and pid in stats_dict:
+                    # Filter out unnecessary info, just keep the actual stats
+                    clean_row = {k: v for k, v in row.items() if k not in ("player_id", "name", "position_type")}
+                    stats_dict[pid][req_type] = clean_row
+        except Exception as e:
+            logger.warning(f"Failed to fetch {req_type} stats: {e}")
+
+    logger.info("Fetching recent player stats...")
+    if batter_ids:
+        merge_stats(batter_ids, "lastweek")
+        merge_stats(batter_ids, "lastmonth")
+        
+    if pitcher_ids:
+        merge_stats(pitcher_ids, "lastweek")
+        merge_stats(pitcher_ids, "lastmonth")
+        
+    return stats_dict

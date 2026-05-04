@@ -106,13 +106,22 @@ def analyze_standings(standings: list[dict], my_team_key: str) -> list[CategoryG
             reverse=not lower_better
         )
         
+        # Assign ranks with tie handling
+        current_rank = 1
+        for i, tv in enumerate(team_values):
+            if i > 0 and tv["value"] != team_values[i-1]["value"]:
+                current_rank = i + 1
+            tv["rank"] = current_rank
+            
         # Find my team's position
         my_rank = None
         my_value = 0.0
+        my_index = 0
         for i, tv in enumerate(team_values):
             if tv["team_key"] == my_team_key:
-                my_rank = i + 1  # 1-indexed
+                my_rank = tv["rank"]
                 my_value = tv["value"]
+                my_index = i
                 break
         
         if my_rank is None:
@@ -123,8 +132,8 @@ def analyze_standings(standings: list[dict], my_team_key: str) -> list[CategoryG
         my_roto_points = num_teams - my_rank + 1
         
         # Gap to gain: difference to team ranked one spot better
-        if my_rank > 1:
-            team_ahead = team_values[my_rank - 2]  # 0-indexed
+        if my_index > 0:
+            team_ahead = team_values[my_index - 1]
             gap_to_gain = abs(team_ahead["value"] - my_value)
             team_ahead_value = team_ahead["value"]
         else:
@@ -132,8 +141,8 @@ def analyze_standings(standings: list[dict], my_team_key: str) -> list[CategoryG
             team_ahead_value = my_value
         
         # Gap to lose: difference to team ranked one spot worse
-        if my_rank < num_teams:
-            team_behind = team_values[my_rank]  # 0-indexed  
+        if my_index < num_teams - 1:
+            team_behind = team_values[my_index + 1]  
             gap_to_lose = abs(my_value - team_behind["value"])
             team_behind_value = team_behind["value"]
         else:
@@ -235,6 +244,10 @@ def _determine_priority(
 ) -> CategoryPriority:
     """Determine the priority level for a category."""
     
+    # Case: Everyone is at 0.0 (pre-season or missing stats), don't mark as HIGH priority
+    if my_value == 0 and gap_to_gain == 0 and (gap_to_lose == 0 or gap_to_lose == float("inf")):
+        return CategoryPriority.MEDIUM
+
     # Already in 1st place in this category
     if my_rank == 1:
         if is_rate and gap_to_lose < _small_gap_threshold(category, my_value):
@@ -244,11 +257,6 @@ def _determine_priority(
     # In last place with large gap
     if my_rank == num_teams and gap_to_gain > _large_gap_threshold(category, my_value):
         return CategoryPriority.LOW  # Punt category
-    
-    # Check if we're close to gaining a point
-    # Case: Everyone is at 0.0 (pre-season or missing stats), don't mark as HIGH priority
-    if my_value == 0 and gap_to_gain == 0 and (gap_to_lose == 0 or gap_to_lose == float("inf")):
-        return CategoryPriority.MEDIUM
         
     if gap_to_gain <= _small_gap_threshold(category, my_value):
         return CategoryPriority.HIGH
@@ -315,11 +323,17 @@ def _extract_stat(team_data: dict, category: str) -> float:
 
     # Dict format — try direct key lookup
     if category in stats:
-        return float(stats[category])
+        try:
+            return float(stats[category])
+        except (ValueError, TypeError):
+            return 0.0
 
     # Try lowercase key
     if category.lower() in stats:
-        return float(stats[category.lower()])
+        try:
+            return float(stats[category.lower()])
+        except (ValueError, TypeError):
+            return 0.0
 
     logger.warning(f"Could not find stat '{category}' in standings data")
     return 0.0

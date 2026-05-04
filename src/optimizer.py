@@ -138,6 +138,9 @@ def optimize_lineup(
     # Combine assignments
     all_assignments = {**batter_assignments, **pitcher_assignments}
     
+    # Post-process: eliminate purely cosmetic swaps between active slots
+    all_assignments = _remove_cosmetic_swaps(all_assignments, roster)
+    
     # Determine which players are benched
     assigned_ids = set(all_assignments.keys())
     benched_batters = [p for p in active_batters if p["player_id"] not in assigned_ids]
@@ -295,6 +298,59 @@ def _assign_players_to_slots(
                 assigned_players.add(player["player_id"])
                 break
     
+    return assignments
+
+
+def _remove_cosmetic_swaps(assignments: dict, roster: list[dict]) -> dict:
+    """
+    Cancel out cosmetic slot swapping between players in active slots.
+    If two active players can swap slots such that more players end up
+    in the slot they were already in (their old_pos), make the swap.
+    """
+    def is_eligible(player, slot_name):
+        if slot_name in ("Util", "P"):
+            return True
+        return slot_name in player.get("eligible_positions", [])
+
+    improved = True
+    while improved:
+        improved = False
+        pids = list(assignments.keys())
+        for i in range(len(pids)):
+            for j in range(i + 1, len(pids)):
+                pid1 = pids[i]
+                pid2 = pids[j]
+                
+                slot1 = assignments[pid1]
+                slot2 = assignments[pid2]
+                
+                if slot1 == slot2:
+                    continue
+                    
+                p1 = _find_player(roster, pid1)
+                p2 = _find_player(roster, pid2)
+                if not p1 or not p2:
+                    continue
+                
+                old1 = p1.get("selected_position", "BN")
+                old2 = p2.get("selected_position", "BN")
+                
+                # Current score (how many are in their old pos)
+                current_score = (slot1 == old1) + (slot2 == old2)
+                
+                # If we swap them, are they eligible?
+                if is_eligible(p1, slot2) and is_eligible(p2, slot1):
+                    new_score = (slot2 == old1) + (slot1 == old2)
+                    
+                    if new_score > current_score:
+                        # Swap improves the number of players staying in old_pos!
+                        assignments[pid1] = slot2
+                        assignments[pid2] = slot1
+                        improved = True
+                        break # break inner loop and restart
+            if improved:
+                break # break outer loop and restart
+                
     return assignments
 
 

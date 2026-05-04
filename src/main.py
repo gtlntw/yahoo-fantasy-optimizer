@@ -205,12 +205,16 @@ def main():
                 [p for p in current_roster if p.get("position_type") == "P"]
             )
         else:
+            print("🧠 Fetching recent stats for AI context...")
+            recent_stats = data.get_recent_stats(league, current_roster)
+            
             print("🧠 AI ranking players with Gemini...")
             ai_ranker.configure_gemini(args.gemini_key)
             ranked_roster = ai_ranker.rank_players(
                 current_roster,
                 category_gaps,
                 str(target_date),
+                recent_stats=recent_stats,
             )
         
         # Show rankings
