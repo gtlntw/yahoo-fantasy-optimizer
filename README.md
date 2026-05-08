@@ -72,21 +72,10 @@ You can also set environment variables: `YAHOO_LEAGUE_ID`, `GEMINI_API_KEY`, `YA
 ## Cloud Deployment (Google Cloud Run)
 
 ```bash
-# Build and push Docker image
-gcloud builds submit --tag gcr.io/YOUR_PROJECT/fantasy-optimizer
-
-# Create Cloud Run Job
-gcloud run jobs create fantasy-optimizer \
-  --image gcr.io/YOUR_PROJECT/fantasy-optimizer \
-  --set-env-vars YAHOO_LEAGUE_ID=12345,GEMINI_API_KEY=your_key \
-  --region us-west1
-
-# Schedule daily at 9 AM PT
-gcloud scheduler jobs create http fantasy-optimizer-daily \
-  --schedule="0 9 * * *" \
-  --time-zone="America/Los_Angeles" \
-  --uri="https://us-west1-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/YOUR_PROJECT/jobs/fantasy-optimizer:run" \
-  --oauth-service-account-email=YOUR_SA@YOUR_PROJECT.iam.gserviceaccount.com
+# Just run the deployment script!
+# This automatically reads your .env and config/oauth2.json, creates a safe 
+# temporary environment config, builds the image, and deploys to Cloud Run.
+./deploy.sh
 ```
 
 ## League Configuration

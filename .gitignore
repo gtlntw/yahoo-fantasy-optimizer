@@ -24,3 +24,7 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+
+# Cloud Run
+env_vars*.yaml
+generate_env_vars.py
