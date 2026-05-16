@@ -86,12 +86,14 @@ def optimize_lineup(
     #  1. SPs who are starting today + all RPs (fill active slots first)
     #  2. SPs NOT in the starting rotation today (fill P flex only / bench)
     # All injured pitchers go to inactive_players as before.
+    # Healthy pitchers: have a game today
     healthy_pitchers = [
         p for p in pitchers
         if p.get("status", "") not in ("IL", "IL10", "IL15", "IL60", "DL", "IL-LT")
         and p.get("selected_position") != "NA"
-        and p.get("has_game", True)  # pitchers with no game go to bench
+        and p.get("has_game", True)
     ]
+    # No game pitchers: no game today
     no_game_pitchers = [
         p for p in pitchers
         if p.get("status", "") not in ("IL", "IL10", "IL15", "IL60", "DL", "IL-LT")
@@ -111,9 +113,16 @@ def optimize_lineup(
     ]
     for p in active_pitchers_primary: p["_sort_priority"] = 0
     
+    # Secondary pitchers: non-starting SPs (with game) OR any pitcher without a game
+    # We only assign them to active slots if they are ALREADY in an active slot.
+    # This prevents unnecessary benching, while avoiding pulling them off the bench.
     active_pitchers_secondary = [
         p for p in healthy_pitchers
         if _is_sp(p) and not p.get("is_starting_pitcher", False)
+        and p.get("selected_position", "BN") not in ("BN", "IL", "IL+", "DL", "NA")
+    ] + [
+        p for p in no_game_pitchers
+        if p.get("selected_position", "BN") not in ("BN", "IL", "IL+", "DL", "NA")
     ]
     for p in active_pitchers_secondary: p["_sort_priority"] = 1
     
@@ -126,14 +135,17 @@ def optimize_lineup(
         or p.get("selected_position") == "NA"
     ]
 
-    # Players with no game are handled separately (force-bench below)
-    no_game_players = no_game_batters + no_game_pitchers
+    # Players with no game are handled separately (force-bench below),
+    # EXCEPT for pitchers already in an active slot (who are now in active_pitchers_secondary)
+    secondary_pitcher_ids = {p["player_id"] for p in active_pitchers_secondary}
+    no_game_players = no_game_batters + [p for p in no_game_pitchers if p["player_id"] not in secondary_pitcher_ids]
     
     # Assign batters to batter slots
     batter_assignments = _assign_players_to_slots(active_batters, BATTER_SLOTS)
     
-    # Assign pitchers to pitcher slots (only primary pitchers get active slots)
-    pitcher_assignments = _assign_players_to_slots(active_pitchers_primary, PITCHER_SLOTS)
+    # Assign pitchers to pitcher slots
+    all_active_pitchers = active_pitchers_primary + active_pitchers_secondary
+    pitcher_assignments = _assign_players_to_slots(all_active_pitchers, PITCHER_SLOTS)
     
     # Combine assignments
     all_assignments = {**batter_assignments, **pitcher_assignments}
@@ -145,9 +157,14 @@ def optimize_lineup(
     assigned_ids = set(all_assignments.keys())
     benched_batters = [p for p in active_batters if p["player_id"] not in assigned_ids]
     
-    # All secondary pitchers are automatically benched, plus any primary ones that didn't fit
-    all_active_pitchers = active_pitchers_primary + active_pitchers_secondary
-    benched_pitchers = [p for p in all_active_pitchers if p["player_id"] not in assigned_ids]
+    # All secondary pitchers that didn't fit (or were on the bench) are benched
+    all_health_pitchers_considered = active_pitchers_primary + [
+        p for p in pitchers
+        if p.get("status", "") not in ("IL", "IL10", "IL15", "IL60", "DL", "IL-LT")
+        and p.get("selected_position") != "NA"
+        and not (p in active_pitchers_primary)
+    ]
+    benched_pitchers = [p for p in all_health_pitchers_considered if p["player_id"] not in assigned_ids]
 
     # Build the change list
     changes = []
