@@ -190,12 +190,59 @@ def get_top_free_agents(league: yfa.League, position_type: str = "B", count: int
         try:
             # Directly request free agents sorted by ownership to minimize API calls
             raw = league.yhandler.get(
-                f"league/{league.league_id}/players;status=FA;position={position_type};sort=PCT_OWNED;start={start};count=25"
+                f"league/{league.league_id}/players;status=A;position={position_type};sort=PCT_OWNED;start={start};count=25/percent_owned"
             )
             
-            # Use the internal _players_from_page method to parse the JSON easily
-            _, fa_on_pg = league._players_from_page(raw)
-            
+            # The yahoo_fantasy_api library's _players_from_page is broken for /percent_owned
+            # because Yahoo returns percent_owned as a list of dicts, but the library expects
+            # a single dict with coverage_type and value. We must parse it manually.
+            try:
+                fa_on_pg = []
+                players_dict = raw["fantasy_content"]["league"][1].get("players", {})
+                
+                # If there are no players or count is 0
+                if "count" not in players_dict or int(players_dict["count"]) == 0:
+                    break
+                    
+                for key, player_wrapper in players_dict.items():
+                    if key == "count":
+                        continue
+                    
+                    player_data = player_wrapper["player"]
+                    p_info = {}
+                    
+                    # Extract player info from the strange array of arrays
+                    for item_group in player_data:
+                        if isinstance(item_group, list):
+                            for item in item_group:
+                                if isinstance(item, dict):
+                                    if "player_id" in item:
+                                        p_info["player_id"] = int(item["player_id"])
+                                    elif "name" in item and "full" in item["name"]:
+                                        p_info["name"] = item["name"]["full"]
+                                    elif "position_type" in item:
+                                        p_info["position_type"] = item["position_type"]
+                                    elif "eligible_positions" in item:
+                                        p_info["eligible_positions"] = [p["position"] for p in item["eligible_positions"]]
+                                    elif "status" in item:
+                                        p_info["status"] = item["status"]
+                        elif isinstance(item_group, dict):
+                            if "percent_owned" in item_group:
+                                # Extract percent_owned from the list of dicts
+                                for po_item in item_group["percent_owned"]:
+                                    if isinstance(po_item, dict) and "value" in po_item:
+                                        p_info["percent_owned"] = po_item["value"]
+                                        
+                    if "status" not in p_info:
+                        p_info["status"] = ""
+                        
+                    if p_info.get("status") != "NA" and "player_id" in p_info:
+                        fa_on_pg.append(p_info)
+                        
+            except (KeyError, IndexError, TypeError) as e:
+                logger.warning(f"Error parsing free agents json: {e}")
+                break
+                
             if not fa_on_pg:
                 break
                 
