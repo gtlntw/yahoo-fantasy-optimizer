@@ -33,9 +33,7 @@ except FileNotFoundError:
     print('WARNING: config/oauth2.json not found!')
 
 with open('env_vars_temp.yaml', 'w') as f:
-    for k, v in env_vars.items():
-        v_escaped = v.replace('\"', '\\\"')
-        f.write(f'{k}: \"{v_escaped}\"\n')
+    json.dump(env_vars, f)
 "
 
 echo "🚀 Updating Cloud Run job..."
