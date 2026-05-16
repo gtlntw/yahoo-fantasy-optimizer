@@ -80,6 +80,11 @@ def parse_args():
         help="Skip AI ranking, use stat-based fallback only",
     )
     parser.add_argument(
+        "--skip-free-agents",
+        action="store_true",
+        help="Skip analyzing free agents for add/drop suggestions",
+    )
+    parser.add_argument(
         "--debug",
         action="store_true",
         help="Enable debug logging",
@@ -227,6 +232,47 @@ def main():
             print(f"  #{rank:<3} {p['name']:25s} ({p.get('position_type', '?')}){reason_str}")
         print()
         
+        # ── Step 5b: Free Agent Add/Drop Analysis ─────────────────
+        add_drop_suggestions = []
+        if not args.no_ai and args.gemini_key and not args.skip_free_agents:
+            print("🔎 Analyzing Free Agent pool for potential upgrades...")
+            # Identify drop candidates: bottom 3 healthy batters and pitchers
+            healthy_batters = [p for p in ranked_roster if p.get("position_type") == "B" and p.get("status", "") not in ("IL", "IL10", "IL15", "IL60", "DL", "IL-LT")]
+            healthy_pitchers = [p for p in ranked_roster if p.get("position_type") == "P" and p.get("status", "") not in ("IL", "IL10", "IL15", "IL60", "DL", "IL-LT")]
+            
+            # Bottom ranked players are at the end of the list since it's sorted by ai_rank
+            drop_candidates = healthy_batters[-3:] + healthy_pitchers[-3:]
+            
+            if drop_candidates:
+                # Fetch top 50 available batters and pitchers by ownership
+                fa_batters = data.get_top_free_agents(league, "B", 50)
+                fa_pitchers = data.get_top_free_agents(league, "P", 50)
+                all_fa = fa_batters + fa_pitchers
+                
+                # We need stats for the FAs to evaluate them
+                print("   Fetching recent stats for top free agents...")
+                fa_stats = data.get_recent_stats(league, all_fa)
+                
+                # Call Gemini for suggestions
+                print("🧠 AI evaluating Add/Drop transactions...")
+                add_drop_suggestions = ai_ranker.suggest_add_drops(
+                    drop_candidates,
+                    all_fa,
+                    category_gaps,
+                    recent_stats=fa_stats
+                )
+                
+                if add_drop_suggestions:
+                    print()
+                    print("💡 Recommended Add/Drop Transactions:")
+                    for idx, sugg in enumerate(add_drop_suggestions, 1):
+                        print(f"  {idx}. DROP {sugg['drop_player_name']} → ADD {sugg['add_player_name']}")
+                        print(f"     Impact: {sugg.get('expected_category_impact', '')}")
+                        print(f"     Why: {sugg.get('rationale', '')}")
+                else:
+                    print("   ✅ No obvious free agent upgrades found today.")
+                print()
+                
         # ── Step 6: Optimize lineup ───────────────────────────────
         print("⚾ Optimizing lineup...")
         changes = optimizer.optimize_lineup(ranked_roster)
@@ -286,6 +332,13 @@ def main():
                     body += f"IL Moves ({len(il_moves)}):\n"
                     for move in il_moves:
                         body += f"• {move['player_name']}: {move['from']} → {move['to']}\n"
+                        
+                if add_drop_suggestions:
+                    body += f"\n💡 Recommended Free Agent Pickups ({len(add_drop_suggestions)}):\n"
+                    for sugg in add_drop_suggestions:
+                        body += f"• DROP {sugg['drop_player_name']} → ADD {sugg['add_player_name']}\n"
+                        body += f"  Impact: {sugg.get('expected_category_impact', '')}\n"
+                        body += f"  Rationale: {sugg.get('rationale', '')}\n"
                 
                 body += f"\nYahoo Fantasy URL: https://baseball.fantasysports.yahoo.com/b1/{args.league_id}\n"
                 

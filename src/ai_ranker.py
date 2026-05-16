@@ -23,6 +23,14 @@ class PlayerRanking(BaseModel):
     rank: int
     reasoning: str
 
+class AddDropSuggestion(BaseModel):
+    drop_player_id: int
+    add_player_id: int
+    drop_player_name: str
+    add_player_name: str
+    rationale: str
+    expected_category_impact: str
+
 # Module-level client, initialized by configure_gemini()
 _client: genai.Client = None
 
@@ -213,3 +221,98 @@ def fallback_ranking(players: list[dict]) -> list[dict]:
         player["ai_reasoning"] = "Stat-based fallback ranking"
     
     return players
+
+
+def suggest_add_drops(
+    drop_candidates: list[dict],
+    free_agents: list[dict],
+    category_gaps: list[CategoryGap],
+    recent_stats: dict,
+    model_name: str = "gemini-3.1-pro-preview",
+) -> list[dict]:
+    """
+    Use Gemini to suggest add/drop transactions.
+    
+    Args:
+        drop_candidates: List of lowest ranked players on the roster
+        free_agents: List of top available free agents
+        category_gaps: Category analysis showing team weaknesses
+        recent_stats: Dict of recent player stats
+        model_name: Gemini model to use
+        
+    Returns:
+        List of suggested transaction dicts
+    """
+    if not _client:
+        logger.warning("Gemini client not configured. Skipping add/drop suggestions.")
+        return []
+        
+    if not drop_candidates or not free_agents:
+        return []
+
+    priority_context = build_priority_context(category_gaps)
+    
+    # Build info dicts for the prompt
+    def _build_info(p):
+        return {
+            "player_id": p.get("player_id"),
+            "name": p.get("name"),
+            "positions": p.get("eligible_positions", []),
+            "position_type": p.get("position_type"),
+            "status": p.get("status", "healthy"),
+            "percent_owned": p.get("percent_owned", 0), # if available
+            "recent_stats": recent_stats.get(p.get("player_id"), {}),
+        }
+        
+    drops_info = [_build_info(p) for p in drop_candidates]
+    adds_info = [_build_info(p) for p in free_agents]
+    
+    prompt = f"""You are an expert fantasy baseball GM optimizing a Rotisserie league roster.
+
+{priority_context}
+
+YOUR EXPENDABLE PLAYERS (DROP CANDIDATES):
+{json.dumps(drops_info, indent=2)}
+
+TOP AVAILABLE FREE AGENTS:
+{json.dumps(adds_info, indent=2)}
+
+TASK: Analyze the free agents and compare them to the drop candidates. 
+Identify up to 3 highly recommended ADD/DROP transactions that would significantly improve the team in its WEAKEST categories.
+Only suggest a transaction if the free agent is a CLEAR UPGRADE over the drop candidate based on recent performance (last 14 days) and category needs.
+Do NOT suggest dropping an injured player (IL) unless they are out for the season, because they can be stashed on the IL instead. Focus on dropping healthy but underperforming bench players.
+
+Return your suggestions as a JSON array matching this schema:
+[
+  {{
+    "drop_player_id": 123,
+    "add_player_id": 456,
+    "drop_player_name": "Player A",
+    "add_player_name": "Player B",
+    "rationale": "Clear explanation of why this upgrade helps the team's weak categories.",
+    "expected_category_impact": "e.g., +SB, +AVG"
+  }}
+]
+If no clear upgrades are found, return an empty array [].
+"""
+
+    try:
+        response = _client.models.generate_content(
+            model=model_name,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.1,
+                response_mime_type="application/json",
+                response_schema=list[AddDropSuggestion],
+            ),
+        )
+        
+        response_text = response.text.strip()
+        suggestions = json.loads(response_text)
+        logger.info(f"AI suggested {len(suggestions)} add/drop transactions")
+        return suggestions
+        
+    except Exception as e:
+        logger.warning(f"Gemini add/drop suggestion failed: {e}")
+        return []
+

@@ -170,6 +170,47 @@ def get_free_agents(league: yfa.League, position: str = "B") -> list[dict]:
     return free_agents
 
 
+def get_top_free_agents(league: yfa.League, position_type: str = "B", count: int = 50) -> list[dict]:
+    """
+    Fetch the top available free agents sorted by ownership percentage.
+    
+    Args:
+        league: Yahoo Fantasy League object
+        position_type: 'B' for batters, 'P' for pitchers
+        count: Number of free agents to fetch (in multiples of 25)
+        
+    Returns:
+        List of player dicts
+    """
+    logger.info(f"Fetching top {count} free agents for {position_type} by ownership...")
+    
+    players = []
+    start = 0
+    while start < count:
+        try:
+            # Directly request free agents sorted by ownership to minimize API calls
+            raw = league.yhandler.get(
+                f"league/{league.league_id}/players;status=FA;position={position_type};sort=PCT_OWNED;start={start};count=25"
+            )
+            
+            # Use the internal _players_from_page method to parse the JSON easily
+            _, fa_on_pg = league._players_from_page(raw)
+            
+            if not fa_on_pg:
+                break
+                
+            players.extend(fa_on_pg)
+            start += 25
+        except Exception as e:
+            logger.warning(f"Failed to fetch free agents at start {start}: {e}")
+            break
+            
+    # Truncate to requested count if necessary
+    top_players = players[:count]
+    logger.info(f"  Fetched {len(top_players)} top free agents for {position_type}")
+    return top_players
+
+
 def categorize_roster(roster: list[dict]) -> dict:
     """
     Categorize roster players into groups for optimization.
