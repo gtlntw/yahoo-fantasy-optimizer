@@ -279,7 +279,7 @@ TOP AVAILABLE FREE AGENTS:
 
 TASK: Analyze the free agents and compare them to the drop candidates. 
 Identify up to 3 highly recommended ADD/DROP transactions that would significantly improve the team in its WEAKEST categories.
-Only suggest a transaction if the free agent is a CLEAR UPGRADE over the drop candidate based on recent performance (last 14 days) and category needs.
+Only suggest a transaction if the free agent is a CLEAR UPGRADE over the drop candidate based on their long-term value (season stats) and recent momentum (last 7 days and last 30 days) combined with category needs.
 Do NOT suggest dropping an injured player (IL) unless they are out for the season, because they can be stashed on the IL instead. Focus on dropping healthy but underperforming bench players.
 
 Return your suggestions as a JSON array matching this schema:
