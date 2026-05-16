@@ -417,10 +417,12 @@ def get_recent_stats(league: yfa.League, roster: list[dict]) -> dict:
 
     logger.info("Fetching recent player stats...")
     if batter_ids:
+        merge_stats(batter_ids, "season")
         merge_stats(batter_ids, "lastweek")
         merge_stats(batter_ids, "lastmonth")
         
     if pitcher_ids:
+        merge_stats(pitcher_ids, "season")
         merge_stats(pitcher_ids, "lastweek")
         merge_stats(pitcher_ids, "lastmonth")
         
