@@ -190,7 +190,7 @@ def get_top_free_agents(league: yfa.League, position_type: str = "B", count: int
         try:
             # Directly request free agents sorted by ownership to minimize API calls
             raw = league.yhandler.get(
-                f"league/{league.league_id}/players;status=A;position={position_type};sort=PCT_OWNED;start={start};count=25/percent_owned"
+                f"league/{league.league_id}/players;status=A;position={position_type};sort=R_PO;start={start};count=25/percent_owned"
             )
             
             # The yahoo_fantasy_api library's _players_from_page is broken for /percent_owned

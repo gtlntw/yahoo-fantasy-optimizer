@@ -307,27 +307,32 @@ def main():
                 else:
                     print("❌ Some changes failed. Check logs above.")
                     sys.exit(1)
+        else:
+            print("✅ Lineup is already optimal! No changes needed.")
             
-            # ── Email Notification ────────────────────────────────────
-            if args.email_to:
-                print(f"📧 Formatting email notification for {args.email_to}...")
-                subject = f"⚾ Yahoo Fantasy Baseball Optimizer: {len(changes)} Moves Needed for {target_date}"
+        # ── Email Notification ────────────────────────────────────
+        if args.email_to:
+            print(f"📧 Formatting email notification for {args.email_to}...")
+            
+            if changes or add_drop_suggestions:
+                subject = f"⚾ Yahoo Fantasy Baseball Optimizer: Updates for {target_date}"
                 
                 body = (
                     f"Date: {target_date}\n"
                     f"Team: {args.team_name or 'Auto-Detected'}\n"
                     f"League ID: {args.league_id}\n\n"
-                    "Suggested Lineup Changes:\n"
-                    "--------------------------\n"
                 )
                 
-                for change in changes:
-                    body += f"• {change['player_name']}: {change['from']} → {change['to']}\n"
-                    if "reason" in change and change["reason"]:
-                        body += f"  Rationale: {change['reason']}\n"
-                    body += "\n"
+                if changes:
+                    body += "Suggested Lineup Changes:\n--------------------------\n"
+                    for change in changes:
+                        body += f"• {change['player_name']}: {change['from']} → {change['to']}\n"
+                        if "reason" in change and change["reason"]:
+                            body += f"  Rationale: {change['reason']}\n"
+                        body += "\n"
+                else:
+                    body += "Your lineup is already perfectly optimized for today! No moves are required.\n\n"
                     
-                body += "\n"
                 if il_moves:
                     body += f"IL Moves ({len(il_moves)}):\n"
                     for move in il_moves:
@@ -338,19 +343,15 @@ def main():
                     for sugg in add_drop_suggestions:
                         body += f"• DROP {sugg['drop_player_name']} → ADD {sugg['add_player_name']}\n"
                         body += f"  Impact: {sugg.get('expected_category_impact', '')}\n"
-                        body += f"  Rationale: {sugg.get('rationale', '')}\n"
+                        body += f"  Rationale: {sugg.get('rationale', '')}\n\n"
                 
-                body += f"\nYahoo Fantasy URL: https://baseball.fantasysports.yahoo.com/b1/{args.league_id}\n"
-                
-                notifier.send_email(subject, body, args.email_to)
-                
-        else:
-            print("✅ Lineup is already optimal! No changes needed.")
-            
-            if args.email_to:
+                body += f"Yahoo Fantasy URL: https://baseball.fantasysports.yahoo.com/b1/{args.league_id}\n"
+            else:
                 subject = f"⚾ Yahoo Fantasy Baseball Optimizer: No Moves Needed for {target_date}"
-                body = "Your lineup is already perfectly optimized for today! No moves are required."
-                notifier.send_email(subject, body, args.email_to)
+                body = "Your lineup is already perfectly optimized for today! No moves are required.\n"
+                body += f"\nYahoo Fantasy URL: https://baseball.fantasysports.yahoo.com/b1/{args.league_id}\n"
+
+            notifier.send_email(subject, body, args.email_to)
         
         print()
         
