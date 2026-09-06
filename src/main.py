@@ -16,7 +16,7 @@ import os
 import sys
 
 from dotenv import load_dotenv
-from . import auth, data, ai_ranker, standings, il_manager, optimizer, roster, notifier, schedule as sched
+from . import auth, data, ai_ranker, standings, il_manager, optimizer, roster, notifier, schedule as sched, browser_client
 
 # Load environment variables from .env file (if it exists)
 load_dotenv()
@@ -32,6 +32,34 @@ def parse_args():
         "--apply",
         action="store_true",
         help="Submit changes to Yahoo (default: dry-run only)",
+    )
+    parser.add_argument(
+        "--browser",
+        action="store_true",
+        help="Use Playwright browser automation instead of Yahoo API",
+    )
+    parser.add_argument(
+        "--browser-login",
+        action="store_true",
+        help="Open interactive Chromium browser window to log in to Yahoo Fantasy",
+    )
+    parser.add_argument(
+        "--team-id",
+        type=str,
+        default=os.environ.get("YAHOO_TEAM_ID", ""),
+        help="Your Yahoo Fantasy team ID (e.g. '1' from /b1/12345/1, auto-detected if omitted)",
+    )
+    parser.add_argument(
+        "--headless",
+        action="store_true",
+        default=True,
+        help="Run browser in headless mode (default: True)",
+    )
+    parser.add_argument(
+        "--no-headless",
+        action="store_false",
+        dest="headless",
+        help="Run browser in visible mode",
     )
     parser.add_argument(
         "--browser-apply",
@@ -109,18 +137,33 @@ def main():
     else:
         target_date = datetime.date.today()
     
+    if args.browser_login:
+        client = browser_client.YahooBrowserClient(headless=False)
+        client.login_interactive(args.league_id)
+        return
+
+    # Determine whether to use browser mode or API mode
+    has_oauth_config = (
+        (args.creds_file and os.path.exists(args.creds_file))
+        or os.path.exists(auth.DEFAULT_CREDS_FILE)
+        or os.path.exists(auth.WRITABLE_CREDS_FILE)
+        or "YAHOO_OAUTH_JSON" in os.environ
+    )
+    use_browser = args.browser or not has_oauth_config
+
     dry_run = not args.apply and not args.browser_apply
     
     # Header
     print()
     print("🏟️  Yahoo Fantasy Baseball Lineup Optimizer")
     print(f"📅  Date: {target_date}")
+    mode_str = "🌐 BROWSER AUTOMATION" if use_browser else "⚡ YAHOO API"
     if args.browser_apply:
-        print("🔧  Mode: 🤖 BROWSER AUTOMATION (generating prompt)")
+        print("🔧  Mode: 🤖 SUBAGENT PROMPT (generating prompt)")
     elif args.apply:
-        print("🔧  Mode: 🔴 LIVE (applying changes via API)")
+        print(f"🔧  Mode: 🔴 LIVE ({mode_str} — applying changes)")
     else:
-        print("🔧  Mode: 🟢 DRY RUN (preview only)")
+        print(f"🔧  Mode: 🟢 DRY RUN ({mode_str} — preview only)")
     print("=" * 55)
     print()
     
@@ -130,20 +173,35 @@ def main():
         print("   Find it in your league URL: baseball.fantasysports.yahoo.com/b1/XXXXX")
         sys.exit(1)
     
+    browser = None
     try:
-        # ── Step 1: Authenticate ──────────────────────────────────
-        print("🔑 Authenticating with Yahoo...")
-        oauth = auth.get_oauth(args.creds_file)
-        league = auth.get_league(oauth, args.league_id)
-        team = auth.get_team(oauth, league, args.team_name or None)
-        print("   ✅ Connected!")
-        print()
-        
-        # ── Step 2: Fetch roster ──────────────────────────────────
-        print("📋 Fetching roster...")
-        current_roster = data.get_roster(team, target_date, league)
-        print(f"   Found {len(current_roster)} players")
-        print()
+        if use_browser:
+            # ── Browser Mode: Authenticate & Fetch ───────────────
+            print("🌐 Starting Playwright browser session...")
+            browser = browser_client.YahooBrowserClient(headless=args.headless)
+            print("📋 Fetching roster via browser...")
+            current_roster = browser.get_roster(args.league_id, args.team_id or None, target_date)
+            print(f"   Found {len(current_roster)} players")
+            print()
+
+            league = None
+            team = None
+            my_team_key = args.team_id or ""
+        else:
+            # ── API Mode: Authenticate & Fetch ──────────────────
+            print("🔑 Authenticating with Yahoo API...")
+            oauth = auth.get_oauth(args.creds_file)
+            league = auth.get_league(oauth, args.league_id)
+            team = auth.get_team(oauth, league, args.team_name or None)
+            print("   ✅ Connected!")
+            print()
+            
+            print("📋 Fetching roster via API...")
+            current_roster = data.get_roster(team, target_date, league)
+            print(f"   Found {len(current_roster)} players")
+            print()
+            team_details = team.details() if hasattr(team, 'details') else {}
+            my_team_key = team_details.get("team_key", "")
 
         # ── Step 2b: Fetch schedule & enrich roster ───────────────
         print("📅 Fetching MLB schedule...")
@@ -163,26 +221,36 @@ def main():
         
         # ── Step 3: Analyze standings ─────────────────────────────
         print("📊 Analyzing category standings...")
-        league_standings = data.get_standings(league)
-        
-        # Find our team key
-        team_details = team.details() if hasattr(team, 'details') else {}
-        my_team_key = team_details.get("team_key", "")
-        
-        # If we can't get teamkey from details, try to find it
-        if not my_team_key:
-            logger.warning(
-                "Could not determine your team key from team.details(). "
-                "Standings analysis will be skipped."
-            )
-            category_gaps = []
+        if use_browser:
+            try:
+                league_standings = browser.get_standings(args.league_id)
+                if not my_team_key and args.team_name:
+                    for t in league_standings:
+                        if args.team_name.lower() in t.get("name", "").lower():
+                            my_team_key = t.get("team_key", "")
+                            break
+                if not my_team_key and league_standings:
+                    my_team_key = league_standings[0].get("team_key", "1")
+                category_gaps = standings.analyze_standings(league_standings, my_team_key) if league_standings else []
+            except Exception as e:
+                logger.warning(f"Could not load standings via browser: {e}")
+                category_gaps = []
         else:
-            category_gaps = standings.analyze_standings(league_standings, my_team_key)
+            league_standings = data.get_standings(league)
+            if not my_team_key:
+                logger.warning(
+                    "Could not determine your team key from team.details(). "
+                    "Standings analysis will be skipped."
+                )
+                category_gaps = []
+            else:
+                category_gaps = standings.analyze_standings(league_standings, my_team_key)
 
         # Display category analysis
-        print()
-        print(standings.build_priority_context(category_gaps))
-        print()
+        if category_gaps:
+            print()
+            print(standings.build_priority_context(category_gaps))
+            print()
         
         # ── Step 4: IL Management ─────────────────────────────────
         print("🏥 Checking IL management...")
@@ -190,8 +258,8 @@ def main():
         print(il_manager.format_il_moves(il_moves))
         print()
         
-        # If IL moves were applied, refetch the roster and re-enrich with schedule
-        if il_moves and not dry_run:
+        # If IL moves were applied in API mode, refetch the roster and re-enrich
+        if il_moves and not dry_run and team:
             print("   Refetching roster after IL moves...")
             current_roster = data.get_roster(team, target_date, league)
             current_roster = sched.enrich_roster_with_schedule(current_roster, schedule_info)
@@ -210,8 +278,16 @@ def main():
                 [p for p in current_roster if p.get("position_type") == "P"]
             )
         else:
-            print("🧠 Fetching recent stats for AI context...")
-            recent_stats = data.get_recent_stats(league, current_roster)
+            recent_stats = {}
+            if league:
+                print("🧠 Fetching recent stats for AI context...")
+                recent_stats = data.get_recent_stats(league, current_roster)
+            elif args.browser and browser:
+                print("🧠 Fetching Season, 7-day, 14-day & 30-day stats via browser...")
+                recent_stats = browser.get_player_stats(
+                    args.league_id,
+                    args.team_id or my_team_key or "4",
+                )
             
             print("🧠 AI ranking players with Gemini...")
             ai_ranker.configure_gemini(args.gemini_key)
@@ -236,30 +312,35 @@ def main():
         add_drop_suggestions = []
         if not args.no_ai and args.gemini_key and not args.skip_free_agents:
             print("🔎 Analyzing Free Agent pool for potential upgrades...")
-            # Identify drop candidates: bottom 3 healthy batters and pitchers
             healthy_batters = [p for p in ranked_roster if p.get("position_type") == "B" and p.get("status", "") not in ("IL", "IL10", "IL15", "IL60", "DL", "IL-LT")]
             healthy_pitchers = [p for p in ranked_roster if p.get("position_type") == "P" and p.get("status", "") not in ("IL", "IL10", "IL15", "IL60", "DL", "IL-LT")]
-            
-            # Bottom ranked players are at the end of the list since it's sorted by ai_rank
             drop_candidates = healthy_batters[-3:] + healthy_pitchers[-3:]
             
             if drop_candidates:
-                # Fetch top 50 available batters and pitchers by ownership
-                fa_batters = data.get_top_free_agents(league, "B", 50)
-                fa_pitchers = data.get_top_free_agents(league, "P", 50)
-                all_fa = fa_batters + fa_pitchers
+                if league:
+                    fa_batters = data.get_top_free_agents(league, "B", 50)
+                    fa_pitchers = data.get_top_free_agents(league, "P", 50)
+                    all_fa = fa_batters + fa_pitchers
+                    print("   Fetching recent stats for top free agents...")
+                    fa_stats = data.get_recent_stats(league, all_fa)
+                elif args.browser and browser:
+                    fa_batters = browser.get_top_free_agents(args.league_id, "B", 25)
+                    fa_pitchers = browser.get_top_free_agents(args.league_id, "P", 25)
+                    all_fa = fa_batters + fa_pitchers
+                    fa_stats = {
+                        str(p["player_id"]): {"season": p.get("stats", {})}
+                        for p in all_fa
+                    }
+                else:
+                    all_fa = []
+                    fa_stats = {}
                 
-                # We need stats for the FAs to evaluate them
-                print("   Fetching recent stats for top free agents...")
-                fa_stats = data.get_recent_stats(league, all_fa)
-                
-                # Call Gemini for suggestions
                 print("🧠 AI evaluating Add/Drop transactions...")
                 add_drop_suggestions = ai_ranker.suggest_add_drops(
                     drop_candidates,
                     all_fa,
                     category_gaps,
-                    recent_stats=fa_stats
+                    recent_stats=fa_stats,
                 )
                 
                 if add_drop_suggestions:
@@ -286,13 +367,12 @@ def main():
             
             if dry_run:
                 print("🟢 DRY RUN — no changes submitted.")
-                print("   Run with --apply to submit these changes to Yahoo via API.")
+                print("   Run with --apply to submit these changes to Yahoo.")
                 print("   Run with --browser-apply to generate a prompt for an AI browser assistant.")
             elif args.browser_apply:
                 print("🤖 Generating instruction prompt for Browser Automation...")
-                team_details = team.details() if hasattr(team, 'details') else {}
-                league_id = str(league.league_id)
-                team_id = my_team_key.split('.t.')[-1] if '.t.' in my_team_key else "1"
+                league_id = str(args.league_id)
+                team_id = my_team_key.split('.t.')[-1] if '.t.' in my_team_key else (my_team_key or "1")
                 
                 prompt = roster.format_browser_instructions(changes, league_id, team_id, target_date)
                 print("\n" + "=" * 60)
@@ -300,6 +380,20 @@ def main():
                 print("=" * 60 + "\n")
                 print(prompt)
                 print("\n" + "=" * 60)
+            elif use_browser:
+                print("🤖 Applying changes via Playwright browser...")
+                team_id = my_team_key.split('.t.')[-1] if '.t.' in my_team_key else (my_team_key or None)
+                success = browser.apply_lineup_changes(
+                    str(args.league_id),
+                    changes,
+                    team_id=team_id,
+                    date=target_date,
+                )
+                if success:
+                    print("🎉 All changes submitted and confirmed via browser!")
+                else:
+                    print("❌ Some changes failed to apply. Check logs/screenshots.")
+                    sys.exit(1)
             else:
                 success = roster.submit_changes(team, changes, target_date, dry_run=False)
                 if success:
@@ -365,6 +459,9 @@ def main():
         logger.exception("Unexpected error")
         print(f"❌ Error: {e}")
         sys.exit(1)
+    finally:
+        if browser:
+            browser.close()
 
 
 if __name__ == "__main__":

@@ -1,6 +1,8 @@
-# OAuth credentials
+# OAuth credentials & Browser Profile
 config/oauth2.json
 .yahoo_cache/
+.yahoo_browser_profile/
+browser_screenshots/
 .env
 
 # Python

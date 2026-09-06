@@ -21,8 +21,8 @@ IL_SLOT_NAMES = {"IL", "IL+", "DL"}
 
 
 def manage_il(
-    team: yfa.Team,
-    roster: list[dict],
+    team: Optional[yfa.Team] = None,
+    roster: list[dict] = None,
     date: Optional[datetime.date] = None,
     dry_run: bool = True,
     **kwargs
@@ -108,7 +108,7 @@ def manage_il(
             )
 
     # Step 4: Apply moves if not dry run
-    if moves and not dry_run:
+    if moves and not dry_run and team is not None:
         _apply_il_moves(team, moves, date)
 
     if not moves:

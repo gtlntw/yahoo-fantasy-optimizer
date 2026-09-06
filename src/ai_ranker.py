@@ -8,7 +8,7 @@ to produce an optimized daily ranking.
 import json
 import logging
 import os
-from typing import Optional
+from typing import Optional, Union
 
 from google import genai
 from google.genai import types
@@ -19,7 +19,7 @@ from .standings import CategoryGap, CategoryPriority, build_priority_context
 logger = logging.getLogger(__name__)
 
 class PlayerRanking(BaseModel):
-    player_id: int
+    player_id: Union[int, str]
     rank: int
     reasoning: str
 
@@ -51,7 +51,7 @@ def rank_players(
     roster: list[dict],
     category_gaps: list[CategoryGap],
     date_str: str,
-    model_name: str = "gemini-3.1-pro-preview",
+    model_name: str = "gemini-3.8-flash",
     recent_stats: dict = None,
 ) -> list[dict]:
     """
@@ -129,7 +129,7 @@ SCORING CATEGORIES ({player_type}s): {categories}
 {priority_context}
 
 PLAYERS TO RANK:
-{json.dumps(player_info, indent=2)}
+{json.dumps(player_info, indent=2, ensure_ascii=False)}
 
 TASK: Rank these {player_type}s from BEST to WORST for today's lineup.
 Your ranking determines who STARTS (plays today) vs who sits on the BENCH.
@@ -140,7 +140,9 @@ Rank based on:
 2. For pitchers: `is_starting_pitcher` field: if True, player IS the probable SP today and ranks far higher than SPs not starting. If False and the player is an SP, rank them BELOW all RPs who have games (reason: "Not in starting rotation today")
 3. Player quality and expected production for today's game vs the named `opponent`
 4. Category priority weights (prioritize HIGH categories)
-5. Recent performance trends based on the `recent_stats` field (which contains `lastweek` and `lastmonth` stats). Favor players on hot streaks and penalize those in deep slumps.
+5. Performance trends based on the `recent_stats` field (which contains `season`, `lastweek` [7-day], `last14` [14-day], and `lastmonth` [30-day] stats). 
+   - For Batters: evaluate short-term form and momentum using last 7-day (`lastweek`) and 14-day (`last14`) stats alongside season baseline (`season`).
+   - For Pitchers: evaluate recent form using 14-day (`last14`) and 30-day (`lastmonth`) stats alongside season baseline (`season`). Favor pitchers on hot streaks and penalize those in deep slumps.
 6. Injury status (injured/IL players ranked last)
 7. For relievers: whether they are in a high-leverage/save opportunity role
 
@@ -172,12 +174,12 @@ Rank ALL players, from 1 (best/start) to {len(players)} (worst/bench).
         rankings = json.loads(response_text)
         
         # Merge rankings back into player dicts
-        rank_map = {r["player_id"]: r for r in rankings}
+        rank_map = {str(r["player_id"]): r for r in rankings}
         for player in players:
-            pid = player.get("player_id")
-            if pid in rank_map:
-                player["ai_rank"] = rank_map[pid]["rank"]
-                player["ai_reasoning"] = rank_map[pid].get("reasoning", "")
+            pid_str = str(player.get("player_id", ""))
+            if pid_str in rank_map:
+                player["ai_rank"] = rank_map[pid_str]["rank"]
+                player["ai_reasoning"] = rank_map[pid_str].get("reasoning", "")
             else:
                 player["ai_rank"] = len(players)  # Unranked goes last
                 player["ai_reasoning"] = "Not ranked by AI"
@@ -193,32 +195,79 @@ Rank ALL players, from 1 (best/start) to {len(players)} (worst/bench).
         return fallback_ranking(players)
 
 
-def fallback_ranking(players: list[dict]) -> list[dict]:
+def fallback_ranking(players: list[dict], category_gaps: list = None) -> list[dict]:
     """
-    Simple stat-based ranking when AI is unavailable.
+    Daily rotation- and schedule-aware ranking without relying on static season ranks.
     
     Prioritizes:
-    1. Healthy players over injured
-    2. Players who are not on bench/IL
-    3. Alphabetical as tiebreaker
+    1. Having a game today (off-day players are benched)
+    2. Injury status (healthy > DTD > IL)
+    3. Rotation context for pitchers:
+       - Confirmed starting pitchers on the mound today (is_starting_pitcher=True)
+       - Active relievers (RP) with games today (Saves, Ks, ERA/WHIP opportunities)
+       - Non-starting SPs (produce 0 stats today)
+    4. Starter stability:
+       - Preserves active starting slots unless an off-day, injury, or confirmed
+         starting pitcher on the mound warrants a lineup change.
     """
     def sort_key(player):
+        # 1. Having a game today (0 = has game, 1000 = off-day)
+        has_game_score = 0 if player.get("has_game", True) else 1000
+
+        # 2. Injury status
         status = player.get("status", "")
-        # Injured players go last
         if status in ("IL", "IL10", "IL15", "IL60", "DL", "IL-LT"):
-            injury_score = 100
+            injury_score = 300
         elif status == "DTD":
-            injury_score = 50
+            injury_score = 60
         else:
             injury_score = 0
-        
-        return (injury_score, player.get("name", ""))
-    
+
+        # 3. Rotation context for Pitchers:
+        # Confirmed starting pitcher on mound today gets top priority (-100)
+        # Active relief pitcher gets high priority (-40)
+        # Non-starting SP gets penalty (+100) because they produce 0 stats today
+        rotation_score = 0
+        if player.get("position_type") == "P":
+            is_sp = "SP" in player.get("eligible_positions", [])
+            is_rp = "RP" in player.get("eligible_positions", [])
+            if player.get("is_starting_pitcher", False):
+                rotation_score = -100  # Confirmed starter on the mound!
+            elif is_rp:
+                rotation_score = -40   # Active reliever can earn SV/K/ERA/WHIP
+            elif is_sp:
+                rotation_score = 100   # Off-day SP: produces 0 stats today
+
+        # 4. Performance & manager consensus tiebreaker (percent_started from Yahoo)
+        # Higher percent_started gives a more negative score (higher priority)
+        # E.g. 85% started -> -85 score; 10% started -> -10 score
+        pct_started = player.get("percent_started", 0.0) or 0.0
+        pct_score = -float(pct_started)
+
+        # 5. Deterministic tiebreaker by name
+        name_tiebreaker = player.get("name", "")
+
+        return (has_game_score, injury_score, rotation_score, pct_score, name_tiebreaker)
+
     players.sort(key=sort_key)
     
     for i, player in enumerate(players):
         player["ai_rank"] = i + 1
-        player["ai_reasoning"] = "Stat-based fallback ranking"
+        pos_type = player.get("position_type")
+        if pos_type == "P":
+            if player.get("is_starting_pitcher"):
+                player["ai_reasoning"] = "Confirmed starting pitcher on mound today"
+            elif "RP" in player.get("eligible_positions", []):
+                player["ai_reasoning"] = "Active reliever (SV/K/ERA opportunity)"
+            else:
+                player["ai_reasoning"] = "Non-starting SP today"
+        else:
+            if not player.get("has_game", True):
+                player["ai_reasoning"] = "No game today"
+            elif player.get("status") in ("IL", "IL10", "IL15", "IL60", "DL"):
+                player["ai_reasoning"] = f"Injured ({player.get('status')})"
+            else:
+                player["ai_reasoning"] = "Active starter with game today"
     
     return players
 
@@ -228,7 +277,7 @@ def suggest_add_drops(
     free_agents: list[dict],
     category_gaps: list[CategoryGap],
     recent_stats: dict,
-    model_name: str = "gemini-3.1-pro-preview",
+    model_name: str = "gemini-3.8-flash",
 ) -> list[dict]:
     """
     Use Gemini to suggest add/drop transactions.
@@ -254,14 +303,16 @@ def suggest_add_drops(
     
     # Build info dicts for the prompt
     def _build_info(p):
+        pid = p.get("player_id")
+        p_stats = recent_stats.get(pid, {}) or recent_stats.get(str(pid), {})
         return {
-            "player_id": p.get("player_id"),
+            "player_id": pid,
             "name": p.get("name"),
             "positions": p.get("eligible_positions", []),
             "position_type": p.get("position_type"),
             "status": p.get("status", "healthy"),
             "percent_owned": p.get("percent_owned", 0), # if available
-            "recent_stats": recent_stats.get(p.get("player_id"), {}),
+            "recent_stats": p_stats,
         }
         
     drops_info = [_build_info(p) for p in drop_candidates]
@@ -272,10 +323,10 @@ def suggest_add_drops(
 {priority_context}
 
 YOUR EXPENDABLE PLAYERS (DROP CANDIDATES):
-{json.dumps(drops_info, indent=2)}
+{json.dumps(drops_info, indent=2, ensure_ascii=False)}
 
 TOP AVAILABLE FREE AGENTS:
-{json.dumps(adds_info, indent=2)}
+{json.dumps(adds_info, indent=2, ensure_ascii=False)}
 
 TASK: Analyze the free agents and compare them to the drop candidates. 
 Identify up to 3 highly recommended ADD/DROP transactions that would significantly improve the team in its WEAKEST categories.

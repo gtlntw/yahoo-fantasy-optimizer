@@ -10,12 +10,13 @@ Automatically sets optimal daily lineups for your Yahoo Fantasy Baseball Rotisse
 - **⚾ Smart Position Assignment** — Optimally assigns players to positions respecting eligibility rules
 - **☁️ Cloud Ready** — Deploys to Google Cloud Run for daily automated execution
 
-## Quick Start
+## Quick Start (Browser Automation — No Yahoo Developer API needed!)
+
+Yahoo has largely shutdown or restricted personal developer apps on Yahoo Developer Network. This optimizer supports full browser automation via **Playwright**, which signs into your Yahoo Fantasy account directly.
 
 ### 1. Prerequisites
 
 - Python 3.10+
-- [Yahoo Developer App](https://developer.yahoo.com/apps/create/) (free)
 - [Gemini API key](https://aistudio.google.com/) (free tier)
 
 ### 2. Install
@@ -25,40 +26,63 @@ cd yahoo-fantasy-optimizer
 python -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
+playwright install chromium
 ```
 
-### 3. Configure
+### 3. One-Time Browser Login
+
+Launch an interactive browser window to log into Yahoo (supports 2FA / passkey). Your session is saved securely in a local `.yahoo_browser_profile/`:
 
 ```bash
-# Copy the example config and fill in your Yahoo credentials
-cp config/oauth2.json.example config/oauth2.json
-# Edit config/oauth2.json with your Client ID and Client Secret
+python -m src.main --browser-login --league-id YOUR_LEAGUE_ID
 ```
 
-### 4. First Run (OAuth Setup)
+Log in with your Yahoo credentials. Once you see your fantasy league/team, return to your terminal and press `[Enter]`.
+
+### 4. Daily Usage
 
 ```bash
-# This will open a browser for Yahoo login (one-time)
-python -m src.main --league-id YOUR_LEAGUE_ID --gemini-key YOUR_GEMINI_KEY
-```
+# Preview changes (dry run with Gemini AI)
+python -m src.main --browser --league-id 12345 --gemini-key YOUR_KEY
 
-### 5. Daily Usage
+# Apply changes automatically via browser
+python -m src.main --browser --league-id 12345 --gemini-key YOUR_KEY --apply
 
-```bash
-# Preview changes (dry run)
-python -m src.main --league-id 12345 --gemini-key YOUR_KEY
-
-# Apply changes
-python -m src.main --league-id 12345 --gemini-key YOUR_KEY --apply
+# Visible browser mode (watch Playwright make the clicks)
+python -m src.main --browser --no-headless --league-id 12345 --gemini-key YOUR_KEY --apply
 
 # Without AI (stat-based only)
-python -m src.main --league-id 12345 --no-ai --apply
+python -m src.main --browser --league-id 12345 --no-ai --apply
+```
+
+### 5. Automated Daily Execution (macOS)
+
+The optimizer is configured to run automatically every morning at **8:00 AM** via macOS `launchd`:
+
+* **Runner script**: [`run_daily.sh`](file:///Users/khlin/Projects/yahoo-fantasy-optimizer/run_daily.sh)
+* **LaunchAgent Plist**: `~/Library/LaunchAgents/com.khlin.yahoo-fantasy-optimizer.plist`
+* **Log files**: [`daily_run.log`](file:///Users/khlin/Projects/yahoo-fantasy-optimizer/daily_run.log)
+
+To manually start, stop, or check status:
+```bash
+# Check status
+launchctl list | grep yahoo-fantasy-optimizer
+
+# Stop schedule
+launchctl unload ~/Library/LaunchAgents/com.khlin.yahoo-fantasy-optimizer.plist
+
+# Re-enable schedule
+launchctl load ~/Library/LaunchAgents/com.khlin.yahoo-fantasy-optimizer.plist
 ```
 
 ## CLI Options
 
 | Flag | Description |
 |---|---|
+| `--browser` | Use Playwright browser automation (auto-selected if no OAuth credentials) |
+| `--browser-login` | Open visible browser window to log into Yahoo once |
+| `--no-headless` | Run browser in visible window so you can watch automated clicks |
+| `--team-id ID` | Your Yahoo Fantasy team ID (optional, auto-detected) |
 | `--apply` | Submit changes to Yahoo (default: dry-run) |
 | `--date YYYY-MM-DD` | Optimize for a specific date |
 | `--league-id ID` | Yahoo Fantasy league ID |
@@ -67,7 +91,7 @@ python -m src.main --league-id 12345 --no-ai --apply
 | `--no-ai` | Use stat-based ranking only |
 | `--debug` | Verbose logging |
 
-You can also set environment variables: `YAHOO_LEAGUE_ID`, `GEMINI_API_KEY`, `YAHOO_TEAM_NAME`.
+You can also set environment variables: `YAHOO_LEAGUE_ID`, `GEMINI_API_KEY`, `YAHOO_TEAM_ID`, `YAHOO_TEAM_NAME`.
 
 ## Cloud Deployment (Google Cloud Run)
 

@@ -118,15 +118,22 @@ def enrich_roster_with_schedule(
     Matching is done by:
       1. MLB player ID stored in `mlb_id` field (most reliable)
       2. Player name string match (fallback for pitchers)
-      3. Yahoo `editorial_team_full_name` → MLB team name (for has_game)
+      3. Yahoo `editorial_team_full_name` or `team` → MLB team name (for has_game)
     """
     for player in roster:
         team_name = _resolve_team_name(player)
-        has_game = team_name in schedule.teams_playing if team_name else False
+        has_game_from_schedule = (team_name in schedule.teams_playing) if (team_name and schedule.teams_playing) else False
+
+        # Yahoo web roster explicitly shows game times or "-"
+        # Do not override has_game to False if Yahoo already found an active game
+        if player.get("has_game") is not None:
+            has_game = player["has_game"] or has_game_from_schedule
+        else:
+            has_game = has_game_from_schedule if schedule.teams_playing else True
 
         # Determine if this SP is in the starting rotation today
-        is_starting = False
-        if has_game and player.get("position_type") == "P":
+        is_starting = player.get("is_starting_pitcher", False)
+        if player.get("position_type") == "P":
             # Try by MLB ID first
             mlb_id = player.get("mlb_id")
             if mlb_id and int(mlb_id) in schedule.starting_pitcher_ids:
@@ -137,8 +144,8 @@ def enrich_roster_with_schedule(
                 if full_name in schedule.pitcher_name_to_opponent:
                     is_starting = True
 
-        opponent = ""
-        if has_game and team_name:
+        opponent = player.get("opponent", "")
+        if not opponent and has_game and team_name:
             opponent = schedule.team_matchups.get(team_name, "")
 
         player["has_game"] = has_game
@@ -152,47 +159,86 @@ def enrich_roster_with_schedule(
 # Helpers
 # ---------------------------------------------------------------------------
 
-# Map common Yahoo team-name variants → canonical MLB API team name (lowercase)
-# Yahoo usually returns the full city+name, but sometimes abbreviated.
+# Map common Yahoo team-name variants & abbreviations → canonical MLB API team name (lowercase)
 _YAHOO_TO_MLB: dict[str, str] = {
     # AL East
+    "nyy": "new york yankees",
     "new york yankees": "new york yankees",
+    "bos": "boston red sox",
     "boston red sox": "boston red sox",
+    "tor": "toronto blue jays",
     "toronto blue jays": "toronto blue jays",
+    "tb": "tampa bay rays",
+    "tbr": "tampa bay rays",
     "tampa bay rays": "tampa bay rays",
+    "bal": "baltimore orioles",
     "baltimore orioles": "baltimore orioles",
     # AL Central
+    "cws": "chicago white sox",
+    "chw": "chicago white sox",
     "chicago white sox": "chicago white sox",
+    "cle": "cleveland guardians",
     "cleveland guardians": "cleveland guardians",
+    "det": "detroit tigers",
     "detroit tigers": "detroit tigers",
+    "kc": "kansas city royals",
+    "kcr": "kansas city royals",
     "kansas city royals": "kansas city royals",
+    "min": "minnesota twins",
     "minnesota twins": "minnesota twins",
     # AL West
+    "hou": "houston astros",
     "houston astros": "houston astros",
+    "laa": "los angeles angels",
+    "ana": "los angeles angels",
     "los angeles angels": "los angeles angels",
+    "oak": "athletics",
+    "ath": "athletics",
+    "sac": "athletics",
     "oakland athletics": "athletics",
     "sacramento athletics": "athletics",
     "athletics": "athletics",
+    "sea": "seattle mariners",
     "seattle mariners": "seattle mariners",
+    "tex": "texas rangers",
     "texas rangers": "texas rangers",
     # NL East
+    "atl": "atlanta braves",
     "atlanta braves": "atlanta braves",
+    "mia": "miami marlins",
     "miami marlins": "miami marlins",
+    "nym": "new york mets",
     "new york mets": "new york mets",
+    "phi": "philadelphia phillies",
     "philadelphia phillies": "philadelphia phillies",
+    "wsh": "washington nationals",
+    "was": "washington nationals",
     "washington nationals": "washington nationals",
     # NL Central
+    "chc": "chicago cubs",
     "chicago cubs": "chicago cubs",
+    "cin": "cincinnati reds",
     "cincinnati reds": "cincinnati reds",
+    "mil": "milwaukee brewers",
     "milwaukee brewers": "milwaukee brewers",
+    "pit": "pittsburgh pirates",
     "pittsburgh pirates": "pittsburgh pirates",
+    "stl": "st. louis cardinals",
     "st. louis cardinals": "st. louis cardinals",
     "st louis cardinals": "st. louis cardinals",
     # NL West
+    "ari": "arizona diamondbacks",
+    "az": "arizona diamondbacks",
     "arizona diamondbacks": "arizona diamondbacks",
+    "col": "colorado rockies",
     "colorado rockies": "colorado rockies",
+    "lad": "los angeles dodgers",
     "los angeles dodgers": "los angeles dodgers",
+    "sd": "san diego padres",
+    "sdp": "san diego padres",
     "san diego padres": "san diego padres",
+    "sf": "san francisco giants",
+    "sfg": "san francisco giants",
     "san francisco giants": "san francisco giants",
 }
 

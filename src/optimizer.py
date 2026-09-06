@@ -256,24 +256,24 @@ def _assign_players_to_slots(
     filled_slots = [False] * len(slots)
     assigned_players = set()
     
-    # Phase 1: Assign players with FEW eligible positions first (most constrained)
-    # This prevents a versatile player from blocking a position-limited player
-    players_by_specificity = sorted(
+    # Sort primarily by rank so better players get first choice of slots
+    # Tie-break with number of eligible active positions so constrained players pick first
+    sorted_players = sorted(
         players,
         key=lambda p: (
             p.get("_sort_priority", 0),            # Primary pitchers (0) before secondary (1)
-            len(p.get("eligible_positions", [])),  # Less positions = more specific
-            p.get("ai_rank", 999),                 # Then by AI rank
+            p.get("ai_rank", 999),                 # Better players first!
+            len([pos for pos in p.get("eligible_positions", []) if pos not in ("BN", "IL", "IL+", "NA")]),
         )
     )
     
-    for player in players_by_specificity:
+    for player in sorted_players:
         if player["player_id"] in assigned_players:
             continue
         
         eligible = set(p for p in player.get("eligible_positions", []))
         
-        # Find the best (most specific) slot for this player
+        # 1. Prefer specific position slots (e.g. 1B, OF, C)
         best_slot_idx = None
         best_slot_specificity = float("inf")
         
@@ -281,39 +281,25 @@ def _assign_players_to_slots(
             if filled_slots[i]:
                 continue
             
-            # Check if player can fill this slot
-            if slot["eligible"] is None:  # Util or P slot - any player
-                # Prefer specific slots first, so give Util/P low priority
-                if best_slot_idx is None:
-                    best_slot_idx = i
-                    best_slot_specificity = 999  # Low priority for flex slots
-            elif eligible & slot["eligible"]:  # Player is eligible
+            if slot["eligible"] is not None and (eligible & slot["eligible"]):
                 slot_specificity = len(slot["eligible"])
                 if slot_specificity < best_slot_specificity:
                     best_slot_idx = i
                     best_slot_specificity = slot_specificity
         
+        # 2. If no specific slot available, try flex slots (Util / P)
+        if best_slot_idx is None:
+            for i, slot in enumerate(slots):
+                if filled_slots[i]:
+                    continue
+                if slot["eligible"] is None:
+                    best_slot_idx = i
+                    break
+        
         if best_slot_idx is not None:
             assignments[player["player_id"]] = slots[best_slot_idx]["slot"]
             filled_slots[best_slot_idx] = True
             assigned_players.add(player["player_id"])
-    
-    # Phase 2: Fill remaining slots with best available (by AI rank)
-    remaining_players = [p for p in players if p["player_id"] not in assigned_players]
-    remaining_players.sort(key=lambda p: (p.get("_sort_priority", 0), p.get("ai_rank", 999)))
-    
-    for player in remaining_players:
-        eligible = set(p for p in player.get("eligible_positions", []))
-        
-        for i, slot in enumerate(slots):
-            if filled_slots[i]:
-                continue
-            
-            if slot["eligible"] is None or eligible & slot["eligible"]:
-                assignments[player["player_id"]] = slots[i]["slot"]
-                filled_slots[i] = True
-                assigned_players.add(player["player_id"])
-                break
     
     return assignments
 
@@ -393,9 +379,12 @@ def _is_meaningful_change(old_pos: str, new_pos: str) -> bool:
     - It moves a pitcher OUT of the pitcher-flex group entirely.
     - It moves a batter into/out of a dedicated positional slot (C, 1B, SS, …).
     """
+    if old_pos.upper() == new_pos.upper():
+        return False
+
     # BN / IL transitions always matter
     special = {"BN", "IL", "IL10", "IL15", "IL60", "DL", "IL-LT", "NA"}
-    if old_pos in special or new_pos in special:
+    if old_pos.upper() in special or new_pos.upper() in special:
         return True
 
     # Swapping within the same pitcher flex group is a no-op
@@ -403,7 +392,8 @@ def _is_meaningful_change(old_pos: str, new_pos: str) -> bool:
         return False
 
     # Swapping within batter Util slots is also a no-op
-    if old_pos in _BATTER_FLEX_SLOTS and new_pos in _BATTER_FLEX_SLOTS:
+    batter_flex = {s.upper() for s in _BATTER_FLEX_SLOTS}
+    if old_pos.upper() in batter_flex and new_pos.upper() in batter_flex:
         return False
 
     return True
