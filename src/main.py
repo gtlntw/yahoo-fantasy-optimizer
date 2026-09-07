@@ -408,42 +408,57 @@ def main():
         if args.email_to:
             print(f"📧 Formatting email notification for {args.email_to}...")
             
-            if changes or add_drop_suggestions:
-                subject = f"⚾ Yahoo Fantasy Baseball Optimizer: Updates for {target_date}"
-                
-                body = (
-                    f"Date: {target_date}\n"
-                    f"Team: {args.team_name or 'Auto-Detected'}\n"
-                    f"League ID: {args.league_id}\n\n"
-                )
-                
-                if changes:
-                    body += "Suggested Lineup Changes:\n--------------------------\n"
-                    for change in changes:
-                        body += f"• {change['player_name']}: {change['from']} → {change['to']}\n"
-                        if "reason" in change and change["reason"]:
-                            body += f"  Rationale: {change['reason']}\n"
-                        body += "\n"
-                else:
-                    body += "Your lineup is already perfectly optimized for today! No moves are required.\n\n"
-                    
-                if il_moves:
-                    body += f"IL Moves ({len(il_moves)}):\n"
-                    for move in il_moves:
-                        body += f"• {move['player_name']}: {move['from']} → {move['to']}\n"
-                        
-                if add_drop_suggestions:
-                    body += f"\n💡 Recommended Free Agent Pickups ({len(add_drop_suggestions)}):\n"
-                    for sugg in add_drop_suggestions:
-                        body += f"• DROP {sugg['drop_player_name']} → ADD {sugg['add_player_name']}\n"
-                        body += f"  Impact: {sugg.get('expected_category_impact', '')}\n"
-                        body += f"  Rationale: {sugg.get('rationale', '')}\n\n"
-                
-                body += f"Yahoo Fantasy URL: https://baseball.fantasysports.yahoo.com/b1/{args.league_id}\n"
+            has_lineup_moves = bool(changes or il_moves)
+            has_fa_suggestions = bool(add_drop_suggestions)
+
+            if has_lineup_moves and has_fa_suggestions:
+                subject = f"⚾ Yahoo Fantasy Baseball Optimizer: Lineup Updates & FA Suggestions for {target_date}"
+            elif has_lineup_moves:
+                subject = f"⚾ Yahoo Fantasy Baseball Optimizer: Lineup Updates for {target_date}"
+            elif has_fa_suggestions:
+                subject = f"⚾ Yahoo Fantasy Baseball Optimizer: Lineup Optimal + FA Suggestions for {target_date}"
             else:
-                subject = f"⚾ Yahoo Fantasy Baseball Optimizer: No Moves Needed for {target_date}"
-                body = "Your lineup is already perfectly optimized for today! No moves are required.\n"
-                body += f"\nYahoo Fantasy URL: https://baseball.fantasysports.yahoo.com/b1/{args.league_id}\n"
+                subject = f"⚾ Yahoo Fantasy Baseball Optimizer: Lineup Optimal for {target_date}"
+
+            body = (
+                f"Date: {target_date}\n"
+                f"Team: {args.team_name or 'Auto-Detected'}\n"
+                f"League ID: {args.league_id}\n\n"
+            )
+
+            # 1. Lineup status
+            if changes:
+                body += f"Lineup Changes ({len(changes)}):\n--------------------------\n"
+                for change in changes:
+                    body += f"• {change['player_name']}: {change['from']} → {change['to']}\n"
+                    if "reason" in change and change["reason"]:
+                        body += f"  Rationale: {change['reason']}\n"
+                    body += "\n"
+            else:
+                body += "Lineup Status:\n--------------------------\n"
+                body += "✅ Your lineup is already optimal for today. All active starting positions are filled by playing players.\n\n"
+
+            # 2. IL Moves
+            if il_moves:
+                body += f"IL Moves ({len(il_moves)}):\n--------------------------\n"
+                for move in il_moves:
+                    body += f"• {move['player_name']}: {move['from']} → {move['to']}\n"
+                body += "\n"
+
+            # 3. Free Agent Add/Drop Analysis
+            body += "Free Agent Recommendations:\n--------------------------\n"
+            if add_drop_suggestions:
+                body += f"💡 Found {len(add_drop_suggestions)} potential waiver upgrade(s):\n\n"
+                for sugg in add_drop_suggestions:
+                    body += f"• DROP {sugg['drop_player_name']} → ADD {sugg['add_player_name']}\n"
+                    body += f"  Impact: {sugg.get('expected_category_impact', '')}\n"
+                    body += f"  Rationale: {sugg.get('rationale', '')}\n\n"
+            elif args.skip_free_agents or args.no_ai or not args.gemini_key:
+                body += "ℹ️ Free agent analysis was skipped (run with AI enabled to see recommendations).\n\n"
+            else:
+                body += "✅ Evaluated top free agents against category needs. No upgrades recommended today; current roster is stronger than available waiver options.\n\n"
+
+            body += f"Yahoo Fantasy URL: https://baseball.fantasysports.yahoo.com/b1/{args.league_id}\n"
 
             notifier.send_email(subject, body, args.email_to)
         
