@@ -731,68 +731,118 @@ class YahooBrowserClient:
         page.goto(target_url, wait_until="domcontentloaded")
         page.wait_for_timeout(2000)
 
-        # 1. Try Yahoo's "Start Active Players" button if applicable
-        start_active_btn = page.query_selector("a:has-text('Start Active Players'), button:has-text('Start Active Players')")
-        if start_active_btn and start_active_btn.is_visible():
-            logger.info("Found 'Start Active Players' button. Clicking it to baseline active roster...")
-            try:
-                start_active_btn.click()
-                page.wait_for_timeout(3000)
-            except Exception as e:
-                logger.warning(f"Could not click 'Start Active Players': {e}")
+        # 1. Apply changes directly in the DOM on #roster-edit-form select elements
+        logger.info(f"Applying {len(changes)} lineup changes to roster...")
+        update_result = page.evaluate('''
+            (changes) => {
+                const results = [];
+                const form = document.querySelector('#roster-edit-form') || document;
+                
+                for (const change of changes) {
+                    const pid = change.player_id ? String(change.player_id) : null;
+                    const pname = change.player_name || '';
+                    const toPos = (change.to || '').trim();
+                    
+                    let select = null;
+                    // First try selecting by name="<player_id>"
+                    if (pid) {
+                        select = form.querySelector(`select[name="${pid}"]`);
+                    }
+                    // If not found, look up the table row matching player_name
+                    if (!select && pname) {
+                        const rows = Array.from(document.querySelectorAll('tr'));
+                        const targetRow = rows.find(r => r.innerText && r.innerText.includes(pname));
+                        if (targetRow) {
+                            select = targetRow.querySelector('select');
+                        }
+                    }
+                    
+                    if (!select) {
+                        results.push({ player_name: pname, success: false, error: 'Select element not found' });
+                        continue;
+                    }
+                    
+                    // Match option case-insensitively or exact
+                    const options = Array.from(select.options);
+                    const matchedOpt = options.find(o => 
+                        o.value.toLowerCase() === toPos.toLowerCase() || 
+                        o.text.trim().toLowerCase() === toPos.toLowerCase()
+                    );
+                    
+                    if (!matchedOpt) {
+                        const available = options.map(o => o.value);
+                        results.push({ 
+                            player_name: pname, 
+                            success: false, 
+                            error: `Position "${toPos}" not in options [${available.join(', ')}]` 
+                        });
+                        continue;
+                    }
+                    
+                    const oldVal = select.value;
+                    select.value = matchedOpt.value;
+                    select.dispatchEvent(new Event('change', { bubbles: true }));
+                    results.push({ 
+                        player_name: pname, 
+                        success: true, 
+                        from: oldVal, 
+                        to: select.value 
+                    });
+                }
+                
+                return results;
+            }
+        ''', changes)
 
-        # 2. Iterate through changes and adjust position dropdowns / swaps
-        for change in changes:
-            pname = change["player_name"]
-            to_pos = change["to"]
-            logger.info(f"Setting {pname} to {to_pos}...")
+        all_success = True
+        for res in update_result:
+            if res.get("success"):
+                logger.info(f"✅ Set {res['player_name']} from {res.get('from')} to {res.get('to')}")
+            else:
+                logger.error(f"❌ Failed setting {res.get('player_name')}: {res.get('error')}")
+                all_success = False
 
-            try:
-                # Find the row containing this player's name
-                row = page.locator(f"tr:has-text('{pname}')").first
-                if not row.count():
-                    logger.warning(f"Could not locate row for player {pname}")
-                    continue
+        if not all_success:
+            logger.warning("Some player position updates failed. Submitting remaining changes...")
 
-                # Look for position select dropdown in the row
-                pos_select = row.locator("select").first
-                if pos_select.count():
-                    try:
-                        pos_select.select_option(value=to_pos)
-                    except Exception:
-                        pos_select.select_option(label=to_pos)
-                    page.wait_for_timeout(500)
-                else:
-                    # Some Yahoo layouts use position toggle buttons or swap modals
-                    pos_btn = row.locator("button, a.pos-label").first
-                    if pos_btn.count():
-                        pos_btn.click()
-                        page.wait_for_timeout(500)
-                        # Look for target position option in the popup
-                        target_opt = page.locator(f"button:has-text('{to_pos}'), a:has-text('{to_pos}')").first
-                        if target_opt.count():
-                            target_opt.click()
-                            page.wait_for_timeout(500)
-            except Exception as e:
-                logger.error(f"Failed setting position for {pname}: {e}")
+        # 2. Submit the form
+        logger.info("Submitting roster form to Yahoo Fantasy...")
+        try:
+            with page.expect_navigation(wait_until="domcontentloaded", timeout=15000):
+                page.evaluate('''() => {
+                    const form = document.querySelector('#roster-edit-form');
+                    if (form) {
+                        form.submit();
+                    } else {
+                        // Fallback: look for save changes button
+                        const btn = document.querySelector("input[value='Save Changes'], button:has-text('Save Changes')");
+                        if (btn) btn.click();
+                    }
+                }''')
+            page.wait_for_timeout(2000)
+        except Exception as e:
+            logger.warning(f"Form submission navigation event notice: {e}")
+            page.wait_for_timeout(2000)
 
-        # 3. Click "Save Changes" or "Submit Changes"
-        save_btn = page.query_selector("input[value='Save Changes'], button:has-text('Save Changes')")
-        if save_btn and save_btn.is_visible():
-            logger.info("Clicking 'Save Changes' button...")
-            save_btn.click()
-            page.wait_for_timeout(3000)
-            logger.info("✅ Lineup changes saved successfully!")
+        # 3. Check for any error or alert banners on the resulting page
+        page_errors = page.evaluate('''() => {
+            const errEls = Array.from(document.querySelectorAll('.alert, .message, #roster-warning, .rostersave-msg, .yfa-message'));
+            return errEls.map(el => el.innerText.trim()).filter(t => t.length > 0);
+        }''')
+        if page_errors:
+            for pe in page_errors:
+                logger.warning(f"Yahoo page message: {pe}")
         else:
-            logger.info("No 'Save Changes' button required (changes auto-saved or confirmed).")
+            logger.info("✅ Lineup changes saved successfully with no error alerts!")
 
-        # Capture verification screenshot
+        # 4. Capture verification screenshot
         SCREENSHOTS_DIR.mkdir(exist_ok=True)
         screenshot_file = SCREENSHOTS_DIR / f"lineup_{date.strftime('%Y%m%d')}.png"
         page.screenshot(path=str(screenshot_file))
         logger.info(f"📷 Lineup confirmation screenshot saved to {screenshot_file}")
+        page.close()
 
-        return True
+        return all_success
 
 
 if __name__ == "__main__":

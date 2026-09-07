@@ -212,6 +212,20 @@ def optimize_lineup(
                 "reason": reason,
             })
 
+    # Force-bench inactive / injured players currently occupying active slots
+    for player in inactive_players:
+        old_pos = player.get("selected_position", "BN")
+        if old_pos not in ("BN", "IL", "IL+", "DL", "NA"):
+            status_desc = player.get("status") or "Inactive"
+            reason = f"Injured/inactive ({status_desc}) — moved to bench"
+            changes.append({
+                "player_id": player["player_id"],
+                "player_name": player["name"],
+                "from": old_pos,
+                "to": "BN",
+                "reason": reason,
+            })
+
     # Filter out cosmetic benching:
     # If a player is being benched, but their old active slot is still empty in the new lineup,
     # let them stay in their old slot to avoid unnecessary noise.
@@ -222,11 +236,13 @@ def optimize_lineup(
     final_changes = []
     for change in changes:
         if change["to"] == "BN" and change["from"] not in ("IL", "IL+", "DL", "NA", "BN"):
-            old_pos = change["from"]
-            if slots_used[old_pos] < slot_capacity[old_pos]:
-                # There's an empty slot here anyway, just leave them in it
-                slots_used[old_pos] += 1
-                continue
+            # Never keep injured/inactive players in active slots
+            if not change.get("reason", "").startswith("Injured/inactive"):
+                old_pos = change["from"]
+                if slots_used[old_pos] < slot_capacity[old_pos]:
+                    # There's an empty slot here anyway, just leave them in it
+                    slots_used[old_pos] += 1
+                    continue
         final_changes.append(change)
 
     logger.info(f"Optimizer produced {len(final_changes)} lineup changes")
