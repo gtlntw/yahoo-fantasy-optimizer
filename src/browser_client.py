@@ -7,9 +7,8 @@ requiring Yahoo Developer API credentials.
 Features:
 - Persistent browser session (stored in .yahoo_browser_profile/)
 - Interactive one-time login with 2FA support
-- Headless scraping of team roster, statuses, game times, and opponents
 - Headless scraping of league standings and category stats
-- Automated lineup adjustment and submission ("Start Active Players" and position changes)
+- Automated lineup adjustment and submission (DOM-level select updates and direct form submission)
 """
 
 import datetime
@@ -713,6 +712,10 @@ class YahooBrowserClient:
     ) -> bool:
         """
         Execute lineup changes directly on the Yahoo Fantasy team web page.
+
+        NOTE: Never click Yahoo's "Start Active Players" button. On desktop Yahoo,
+        it triggers a blocking modal upsell dialog ("Fantasy Plus") that obstructs
+        the page, and it overrides the optimizer's custom category-aware logic.
         """
         if not changes:
             logger.info("No lineup changes to apply.")

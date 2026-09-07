@@ -173,6 +173,16 @@ class TestBrowserParser(unittest.TestCase):
         self.assertEqual(team1["stats"]["HR"], 120.0)
         self.assertEqual(team1["stats"]["SB"], 55.0)
 
+    def test_no_start_active_players_button_click(self):
+        """
+        Regression test: ensure apply_lineup_changes never queries or clicks
+        Yahoo's 'Start Active Players' button, which triggers a blocking modal.
+        """
+        import inspect
+        source = inspect.getsource(YahooBrowserClient.apply_lineup_changes)
+        self.assertNotIn("has-text('Start Active Players')", source)
+        self.assertNotIn('has-text("Start Active Players")', source)
+
 
 if __name__ == "__main__":
     unittest.main()
