@@ -330,8 +330,11 @@ TOP AVAILABLE FREE AGENTS:
 
 TASK: Analyze the free agents and compare them to the drop candidates. 
 Identify up to 3 highly recommended ADD/DROP transactions that would significantly improve the team in its WEAKEST categories.
-Only suggest a transaction if the free agent is a CLEAR UPGRADE over the drop candidate based on their long-term value (season stats) and recent momentum (last 7 days and last 30 days) combined with category needs.
-Do NOT suggest dropping an injured player (IL) unless they are out for the season, because they can be stashed on the IL instead. Focus on dropping healthy but underperforming bench players.
+Only suggest a transaction if the free agent is a CLEAR UPGRADE over the drop candidate based on their long-term value (season stats) and recent momentum (last 7 days, last 14 days, and last 30 days) combined with category needs.
+
+CRITICAL INJURY RULES:
+1. NEVER suggest adding any player who is injured or on the injured list (status: IL, IL10, IL15, IL60, DTD, DL, etc.). All ADD candidates MUST be healthy and active players capable of immediately playing and producing stats.
+2. Do NOT suggest dropping an injured player (IL) unless they are out for the season, because they can be stashed on the IL instead. Focus on dropping healthy but underperforming bench players.
 
 Return your suggestions as a JSON array matching this schema:
 [
@@ -360,8 +363,22 @@ If no clear upgrades are found, return an empty array [].
         
         response_text = response.text.strip()
         suggestions = json.loads(response_text)
-        logger.info(f"AI suggested {len(suggestions)} add/drop transactions")
-        return suggestions
+
+        # Safety post-filter: reject any suggestions that add an injured or inactive player
+        fa_status_map = {str(p.get("player_id")): p.get("status", "") for p in free_agents}
+        safe_suggestions = []
+        for s in suggestions:
+            add_id = str(s.get("add_player_id", ""))
+            add_status = fa_status_map.get(add_id, "")
+            if add_status in ("IL", "IL10", "IL15", "IL60", "DL", "IL-LT", "DTD", "NA", "SUSP"):
+                logger.warning(
+                    f"Rejecting AI add suggestion for {s.get('add_player_name')} because player is injured/inactive (status: {add_status})"
+                )
+                continue
+            safe_suggestions.append(s)
+
+        logger.info(f"AI suggested {len(safe_suggestions)} add/drop transactions")
+        return safe_suggestions
         
     except Exception as e:
         logger.warning(f"Gemini add/drop suggestion failed: {e}")

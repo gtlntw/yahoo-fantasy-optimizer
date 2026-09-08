@@ -606,10 +606,13 @@ class YahooBrowserClient:
         league_id: str,
         position_type: str = "B",
         count: int = 25,
+        fetch_recent_stats: bool = True,
     ) -> list[dict]:
         """
         Fetch top available free agents sorted by ownership percentage via browser.
         position_type: 'B' for batters, 'P' for pitchers
+        Accurately parses injury status (IL, IL10, IL60, DTD, etc.) and gathers
+        multi-horizon stats (Season, Last 7 Days, Last 14 Days, Last 30 Days).
         """
         context = self.start()
         page = context.new_page()
@@ -619,6 +622,30 @@ class YahooBrowserClient:
         logger.info(f"Fetching top free agents ({position_type}) via browser: {url}")
 
         free_agents = []
+        stat_labels = (
+            ["H/AB", "R", "HR", "RBI", "SB", "BB", "TB", "AVG"]
+            if position_type == "B"
+            else ["IP", "W", "SV", "K", "ERA", "WHIP", "QS"]
+        )
+
+        def _extract_row_stats(cells_list: list[str]) -> dict:
+            c_list = list(cells_list)
+            while c_list and not c_list[-1].strip():
+                c_list.pop()
+            row_stats = {}
+            for i, label in enumerate(reversed(stat_labels)):
+                idx = len(c_list) - 1 - i
+                if idx >= 0:
+                    val_str = c_list[idx]
+                    if "/" in val_str or label in ("H/AB", "IP"):
+                        row_stats[label] = val_str
+                    else:
+                        try:
+                            row_stats[label] = float(val_str.replace(",", ""))
+                        except ValueError:
+                            row_stats[label] = val_str
+            return row_stats
+
         try:
             page.goto(url, wait_until="domcontentloaded")
             page.wait_for_timeout(2000)
@@ -641,6 +668,21 @@ class YahooBrowserClient:
                         m = re.search(r"/players/(\d+)", href)
                         pid = m.group(1) if m else name.lower().replace(" ", "_")
 
+                    # Status badge (DTD, IL, IL10, IL15, IL60, NA, DL, SUSP, etc.)
+                    status = ""
+                    status_tag = r.find(class_=re.compile(r"\bstatus\b|player-status"))
+                    if status_tag:
+                        status = status_tag.get_text(strip=True)
+                        if "note" in status.lower():
+                            status = ""
+                    if not status:
+                        status_span = r.find(
+                            lambda tag: tag.name in ("span", "abbr")
+                            and tag.get_text(strip=True) in ("DTD", "IL", "IL10", "IL15", "IL60", "NA", "DL", "SUSP")
+                        )
+                        if status_span:
+                            status = status_span.get_text(strip=True)
+
                     # Pos / Meta
                     meta = r.find(class_=re.compile(r"Fz-xxs|ysf-player-meta|F-sub"))
                     eligible_positions = []
@@ -649,7 +691,7 @@ class YahooBrowserClient:
                         if len(parts) > 1:
                             eligible_positions = [p.strip().upper() for p in parts[1].split(",") if p.strip()]
 
-                    # Percent owned and counting stats
+                    # Percent owned
                     cells = [td.get_text(strip=True) for td in r.find_all("td")]
                     pct_owned = 0.0
                     for c in cells:
@@ -661,46 +703,66 @@ class YahooBrowserClient:
                                 pass
 
                     # Parse stats from row
-                    stats = {}
-                    if position_type == "B":
-                        stat_labels = ["H/AB", "R", "HR", "RBI", "SB", "BB", "TB", "AVG"]
-                        for i, label in enumerate(reversed(stat_labels)):
-                            idx = len(cells) - 1 - i
-                            if idx >= 0:
-                                val_str = cells[idx]
-                                if "/" in val_str or label == "H/AB":
-                                    stats[label] = val_str
-                                else:
-                                    try:
-                                        stats[label] = float(val_str.replace(",", ""))
-                                    except ValueError:
-                                        stats[label] = val_str
-                    else:
-                        stat_labels = ["IP", "W", "SV", "K", "ERA", "WHIP", "QS"]
-                        for i, label in enumerate(reversed(stat_labels)):
-                            idx = len(cells) - 1 - i
-                            if idx >= 0:
-                                val_str = cells[idx]
-                                try:
-                                    stats[label] = float(val_str.replace(",", ""))
-                                except ValueError:
-                                    stats[label] = val_str
+                    stats = _extract_row_stats(cells)
 
                     free_agents.append({
                         "player_id": str(pid),
                         "name": name,
                         "position_type": position_type,
                         "eligible_positions": eligible_positions,
-                        "status": "",
+                        "status": status,
                         "percent_owned": pct_owned,
                         "stats": stats,
+                        "recent_stats": {
+                            "season": stats,
+                            "lastweek": {},
+                            "last14": {},
+                            "lastmonth": {},
+                        },
                     })
                     if len(free_agents) >= count:
                         break
+
+            # Fetch multi-horizon stats (Last 7 Days, Last 14 Days, Last 30 Days)
+            if fetch_recent_stats and free_agents:
+                fa_map = {p["player_id"]: p for p in free_agents}
+                views = [
+                    ("lastweek", "S_L7"),
+                    ("last14", "S_L14"),
+                    ("lastmonth", "S_L30"),
+                ]
+                for view_name, stat_code in views:
+                    horizon_url = f"https://baseball.fantasysports.yahoo.com/b1/{league_id}/players?status=A&pos={position_type}&sort=OR&stat1={stat_code}"
+                    try:
+                        page.goto(horizon_url, wait_until="domcontentloaded")
+                        page.wait_for_timeout(1000)
+                        h_soup = BeautifulSoup(page.content(), "html.parser")
+                        h_table = h_soup.find("table", class_=re.compile(r"Table|players"))
+                        if not h_table:
+                            continue
+                        h_rows = h_table.find("tbody").find_all("tr") if h_table.find("tbody") else h_table.find_all("tr")
+                        for hr in h_rows:
+                            nt = hr.find("a", attrs={"data-ys-playerid": True}) or hr.find("a", class_=re.compile(r"Nowrap|name"))
+                            if not nt:
+                                continue
+                            p_id = nt.get("data-ys-playerid")
+                            if not p_id:
+                                href = nt.get("href", "")
+                                m = re.search(r"/players/(\d+)", href)
+                                p_id = m.group(1) if m else None
+                            if p_id and str(p_id) in fa_map:
+                                h_cells = [td.get_text(strip=True) for td in hr.find_all("td")]
+                                h_stats = _extract_row_stats(h_cells)
+                                fa_map[str(p_id)]["recent_stats"][view_name] = h_stats
+                    except Exception as ex:
+                        logger.debug(f"Failed fetching {view_name} for free agents: {ex}")
+
         except Exception as e:
             logger.warning(f"Failed to fetch free agents via browser: {e}")
+        finally:
+            page.close()
 
-        logger.info(f"Parsed {len(free_agents)} top free agents for {position_type}.")
+        logger.info(f"Parsed {len(free_agents)} top free agents for {position_type} with multi-horizon stats.")
         return free_agents
 
     def apply_lineup_changes(

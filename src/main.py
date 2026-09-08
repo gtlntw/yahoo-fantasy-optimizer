@@ -324,21 +324,29 @@ def main():
                     print("   Fetching recent stats for top free agents...")
                     fa_stats = data.get_recent_stats(league, all_fa)
                 elif args.browser and browser:
-                    fa_batters = browser.get_top_free_agents(args.league_id, "B", 25)
-                    fa_pitchers = browser.get_top_free_agents(args.league_id, "P", 25)
+                    print("   Fetching top free agents & multi-horizon stats (Season, 7d, 14d, 30d)...")
+                    fa_batters = browser.get_top_free_agents(args.league_id, "B", 25, fetch_recent_stats=True)
+                    fa_pitchers = browser.get_top_free_agents(args.league_id, "P", 25, fetch_recent_stats=True)
                     all_fa = fa_batters + fa_pitchers
                     fa_stats = {
-                        str(p["player_id"]): {"season": p.get("stats", {})}
+                        str(p["player_id"]): p.get("recent_stats", {"season": p.get("stats", {})})
                         for p in all_fa
                     }
                 else:
                     all_fa = []
                     fa_stats = {}
                 
-                print("🧠 AI evaluating Add/Drop transactions...")
+                # Exclude any free agents who are injured or unavailable
+                healthy_fa = [
+                    p for p in all_fa
+                    if p.get("status", "") not in ("IL", "IL10", "IL15", "IL60", "DL", "IL-LT", "DTD", "NA", "SUSP")
+                ]
+                logger.info(f"Filtered free agents: {len(healthy_fa)} healthy out of {len(all_fa)} available candidates")
+                
+                print(f"🧠 AI evaluating Add/Drop transactions ({len(healthy_fa)} healthy free agents considered)...")
                 add_drop_suggestions = ai_ranker.suggest_add_drops(
                     drop_candidates,
-                    all_fa,
+                    healthy_fa,
                     category_gaps,
                     recent_stats=fa_stats,
                 )

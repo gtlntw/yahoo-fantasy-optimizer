@@ -183,6 +183,64 @@ class TestBrowserParser(unittest.TestCase):
         self.assertNotIn("has-text('Start Active Players')", source)
         self.assertNotIn('has-text("Start Active Players")', source)
 
+    def test_parse_free_agent_status_and_stats(self):
+        """
+        Verify that Free Agent parsing detects injury status badges (e.g. IL60)
+        and properly extracts stat columns without trailing-cell offset.
+        """
+        from bs4 import BeautifulSoup
+        html = '''
+        <table class="Table">
+            <tbody>
+                <tr>
+                    <td>icon</td><td>icon</td>
+                    <td>
+                        <a class="Nowrap" data-ys-playerid="12544" href="/players/12544">Casey Schmitt</a>
+                        <span class="status">IL60</span>
+                        <span class="ysf-player-meta">SF - 1B,2B,3B,OF</span>
+                    </td>
+                    <td>STL</td><td>W</td><td>-</td><td>82</td><td>-</td><td>20%</td>
+                    <td>105/387</td><td>47</td><td>21</td><td>55</td><td>9</td><td>11</td><td>187</td><td>.271</td><td></td>
+                </tr>
+                <tr>
+                    <td>icon</td><td>icon</td>
+                    <td>
+                        <a class="Nowrap" data-ys-playerid="11735" href="/players/11735">Jarren Duran</a>
+                        <span class="ysf-player-meta">BOS - OF</span>
+                    </td>
+                    <td>TOR</td><td>W</td><td>-</td><td>35</td><td>-</td><td>84%</td>
+                    <td>135/470</td><td>80</td><td>15</td><td>60</td><td>25</td><td>45</td><td>210</td><td>.287</td><td></td>
+                </tr>
+            </tbody>
+        </table>
+        '''
+        soup = BeautifulSoup(html, "html.parser")
+        rows = soup.find("tbody").find_all("tr")
+
+        # Row 0: Schmitt (IL60)
+        r0 = rows[0]
+        status_tag = r0.find(class_="status")
+        status0 = status_tag.get_text(strip=True) if status_tag else ""
+        self.assertEqual(status0, "IL60")
+
+        # Extract stats from r0
+        cells0 = [td.get_text(strip=True) for td in r0.find_all("td")]
+        while cells0 and not cells0[-1].strip():
+            cells0.pop()
+        labels = ["H/AB", "R", "HR", "RBI", "SB", "BB", "TB", "AVG"]
+        stats0 = {}
+        for i, l in enumerate(reversed(labels)):
+            stats0[l] = float(cells0[-1 - i]) if l != "H/AB" else cells0[-1 - i]
+        self.assertEqual(stats0["AVG"], 0.271)
+        self.assertEqual(stats0["TB"], 187.0)
+        self.assertEqual(stats0["HR"], 21.0)
+
+        # Row 1: Duran (Healthy)
+        r1 = rows[1]
+        status_tag1 = r1.find(class_="status")
+        status1 = status_tag1.get_text(strip=True) if status_tag1 else ""
+        self.assertEqual(status1, "")
+
 
 if __name__ == "__main__":
     unittest.main()
